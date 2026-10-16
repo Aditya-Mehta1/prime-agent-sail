@@ -33,7 +33,7 @@ export async function prepareDispatchPythonSkills(
 		await new SailClient().run(
 			binding.boxId,
 			{
-				command: `${shellQuote(binding.guestPython)} -m pip install --disable-pip-version-check -q ${[...packages].map(shellQuote).join(" ")}`,
+				command: `uv pip install --python ${shellQuote(binding.guestPython)} -q ${[...packages].map(shellQuote).join(" ")}`,
 				cwd: binding.guestCwd,
 			},
 			signal,

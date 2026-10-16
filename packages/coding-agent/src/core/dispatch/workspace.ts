@@ -186,8 +186,8 @@ git -C ${GUEST_REPO} add -Af
 git -C ${GUEST_REPO} commit --allow-empty -qm 'Starting working tree snapshot'
 ${capture.origin ? `git -C ${GUEST_REPO} remote add origin ${shellQuote(capture.origin)}` : ""}
 git -C ${GUEST_REPO} config credential.https://github.com.helper '!gh auth git-credential'
-uv venv --seed --python 3.11 ${GUEST_INSTALL}/venv
-${binding.guestPython} -m pip install -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
+uv venv --python 3.11 ${GUEST_INSTALL}/venv
+uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
 rm -rf ${GUEST_INSTALL}/project /tmp/prime-dispatch.tar.gz
 git -C ${GUEST_REPO} rev-parse HEAD
 `;
