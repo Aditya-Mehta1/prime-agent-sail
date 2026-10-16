@@ -27,7 +27,7 @@ import { convertResponsesMessages, convertResponsesTools, processResponsesStream
 import { withOpenCodeHeaders } from "./opencode-headers.js";
 import { buildBaseOptions } from "./simple-options.js";
 
-const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode", "sail-asap", "sail"]);
 
 /**
  * Resolve cache retention preference.
@@ -45,6 +45,7 @@ function resolveCacheRetention(cacheRetention?: CacheRetention): CacheRetention 
 
 function getCompat(model: Model<"openai-responses">): Required<OpenAIResponsesCompat> {
 	return {
+		supportsServiceTier: model.compat?.supportsServiceTier ?? model.provider !== "github-copilot",
 		sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
 		supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
 	};
@@ -110,7 +111,10 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
 
 			await processResponsesStream(openaiStream, output, stream, model, {
 				serviceTier: options?.serviceTier,
-				applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
+				applyServiceTierPricing:
+					model.provider === "sail" || model.provider === "sail-asap"
+						? undefined
+						: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
 			});
 
 			if (options?.signal?.aborted) {
@@ -239,9 +243,7 @@ function buildParams(model: Model<"openai-responses">, context: Context, options
 		params.temperature = options?.temperature;
 	}
 
-	// GitHub Copilot rejects the service_tier FIELD itself (400) for every value.
-	// Elsewhere it is always sent: absence means "auto" (project tier), not "default".
-	if (options?.serviceTier !== undefined && model.provider !== "github-copilot") {
+	if (options?.serviceTier !== undefined && compat.supportsServiceTier) {
 		params.service_tier = options.serviceTier;
 	}
 

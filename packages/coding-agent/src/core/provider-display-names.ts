@@ -23,7 +23,7 @@ export const BUILT_IN_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
 	openrouter: "OpenRouter",
 	"prime-agent-traces": "Prime Agent Traces",
 	"prime-inference": "Prime Inference",
-	sail: "Sail (Flex)",
+	sail: "Sail (Balanced)",
 	"sail-asap": "Sail (ASAP)",
 	"vercel-ai-gateway": "Vercel AI Gateway",
 	xai: "xAI (Grok)",
