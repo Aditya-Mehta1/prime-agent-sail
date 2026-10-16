@@ -78,7 +78,7 @@ async function fixture() {
 			response.once("close", disconnected);
 			return;
 		}
-		if (url.pathname.endsWith("/sleep") || url.pathname.endsWith("/terminate")) {
+		if (url.pathname.endsWith("/terminate")) {
 			boxActions.push(url.pathname);
 			response.writeHead(200, { "Content-Type": "application/json" }).end("{}");
 			return;
@@ -357,7 +357,7 @@ describe("Sail kernel relay", () => {
 		}
 	});
 
-	it("#3 drains relay output until cancellation is verified before allowing replacement", async () => {
+	it("drains relay output until cancellation is verified before allowing replacement", async () => {
 		const f = await fixture();
 		const launcher = createDispatchKernelLauncher(f.binding, {});
 		const child = launcher.spawn();
