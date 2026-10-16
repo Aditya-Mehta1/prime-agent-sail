@@ -16,8 +16,6 @@ export class SailClient {
 			appId,
 			name,
 			size: "s",
-			memoryLimitGib: 2,
-			diskLimitGib: 8,
 			image: { base: "devbox" },
 		});
 	}
