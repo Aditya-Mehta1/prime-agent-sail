@@ -89,7 +89,6 @@ export function createDispatchKernelLauncher(
 				if (message.type === "cleanup-error") rejectDone(new Error(message.error));
 			});
 			child.once("error", rejectDone);
-			// shortcut: a lost relay handle requires manual cleanup; add recovery only when needed.
 			child.once("exit", () =>
 				rejectDone(
 					new Error(

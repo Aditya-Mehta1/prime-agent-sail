@@ -1353,7 +1353,10 @@ export class ReplKernelManager {
 			const releaseChild = () => {
 				child.stdin?.destroy();
 				child.stdout?.destroy();
-				// Preserve exited-child stderr for the exit handler to drain.
+				// An exited child keeps its stderr: the post-exit drain owns it, and
+				// destroying here would drop its buffered last words. A still-alive
+				// child may ignore the kill signal and never emit 'exit', so that
+				// drain would never run — destroy now to bound the pipe's lifetime.
 				if (child.exitCode === null && child.signalCode === null) {
 					child.stderr?.destroy();
 				}
@@ -1361,9 +1364,13 @@ export class ReplKernelManager {
 				let signaled = false;
 				try {
 					signaled = child.kill(killSignal);
-				} catch {}
-				// A successful signal confirms the PID still belongs to this child.
+				} catch {
+					// The kernel has already exited.
+				}
+				// Inactive only when the signal proved the pid still named our un-reaped child.
 				if (!this.options.processLauncher && pid !== undefined && signaled) recordOrphanProcessState(pid, false);
+				// A killed/crashed kernel cannot run its own shutdown hook, so the host
+				// reaps the bash() process groups it journaled under this kernel pid.
 				if (!this.options.processLauncher && pid !== undefined) reapKernelOrphanProcesses(pid);
 			};
 			if (this.options.processLauncher) {
