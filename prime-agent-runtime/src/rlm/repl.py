@@ -1212,7 +1212,8 @@ def main() -> None:
         print(json.dumps({"port": _socket_listener.getsockname()[1]}), flush=True)
         _socket_connection, _ = _socket_listener.accept()
     stdin_fd = _setup_fds()
-    _start_owner_watchdog()
+    if _socket_listener is None:
+        _start_owner_watchdog()
 
     # Alias the executing module so an in-cell `from rlm.repl import emit`
     # binds the live module, not a second copy.

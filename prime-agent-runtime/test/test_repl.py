@@ -142,9 +142,9 @@ class ReplSocketTest(unittest.TestCase):
         self.addCleanup(repl.close)
         self.assertEqual(repl.ready()[0]["event"], "ready")
         events = repl.execute(
-            "setup", "import os, threading\nlock = threading.Lock()\nidentity = id(lock)\nvalue = 41\nos.getpid()"
+            "setup", "import os, threading\nlock = threading.Lock()\nidentity = id(lock)\nvalue = 41\n(os.getpid(), any(t.name.endswith('(_owner_watchdog)') for t in threading.enumerate()))"
         )
-        self.assertEqual(one(events, "result")["text"], str(repl.proc.pid))
+        self.assertEqual(one(events, "result")["text"], f"({repl.proc.pid}, False)")
         repl.disconnect()
         repl.connect()
         events = repl.execute("resumed", "value += 1\n(value, id(lock) == identity)")
