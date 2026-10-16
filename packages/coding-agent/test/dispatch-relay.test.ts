@@ -257,7 +257,7 @@ describe("Sail kernel relay", () => {
 			await provisioner.dispose();
 			expect(f.commands).toHaveLength(2);
 			expect(f.commands[0].command).toBe(
-				"'/state/venv/bin/python' -m pip install --disable-pip-version-check -q '/state/repo/subdir/skills/project-skill'",
+				"uv pip install --python '/state/venv/bin/python' -q '/state/repo/subdir/skills/project-skill'",
 			);
 			expect(f.commands[1]).toMatchObject({
 				command: "exec '/state/venv/bin/python' -u -m rlm.repl",

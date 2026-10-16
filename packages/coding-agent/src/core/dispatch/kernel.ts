@@ -33,7 +33,7 @@ export async function prepareDispatchPythonSkills(
 		await new SailClient().run(
 			binding.boxId,
 			{
-				command: `${shellQuote(binding.guestPython)} -m pip install --disable-pip-version-check -q ${[...packages].map(shellQuote).join(" ")}`,
+				command: `uv pip install --python ${shellQuote(binding.guestPython)} -q ${[...packages].map(shellQuote).join(" ")}`,
 				cwd: binding.guestCwd,
 			},
 			signal,
@@ -130,6 +130,7 @@ export function createDispatchKernelLauncher(
 							].includes(key),
 						),
 					),
+					VIRTUAL_ENV: posix.dirname(posix.dirname(binding.guestPython)),
 					RLM_SESSION_DIR: binding.guestStateDir,
 					RLM_HARNESS_STATE_DIR: `${binding.guestStateDir}/harness`,
 					RLM_GLOBAL_HARNESS_STATE_DIR: `${binding.guestStateDir}/global-harness`,
