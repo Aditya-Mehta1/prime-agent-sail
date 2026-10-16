@@ -73,7 +73,7 @@ describe("subagent default model setting", () => {
 			expect(harness.session.getActiveToolNames()).toEqual(["ipython"]);
 			expect(hostWrites).toBe(0);
 			expect(kernelCalls).toBe(1);
-			await expect(harness.session.setModel(harness.models[1]!)).rejects.toThrow("Sail Flex");
+			await expect(harness.session.setModel(harness.models[1]!)).rejects.toThrow("Sail Balanced");
 			expect(await harness.session.cycleModel()).toBeUndefined();
 			const services = await createAgentSessionServices({
 				cwd: harness.tempDir,
@@ -109,18 +109,19 @@ describe("subagent default model setting", () => {
 	});
 
 	it.each(["dispatch", "spawn"] as const)(
-		"admits foreground dispatch or remote spawn (%s) and cancels through the child handle",
+		"uses Sail Balanced for %s regardless of foreground model or subagent default",
 		async (operation) => {
 			let started!: (options: CreateRlmSubagentRuntimeOptions) => void;
 			const preparing = new Promise<CreateRlmSubagentRuntimeOptions>((resolve) => {
 				started = resolve;
 			});
+			vi.stubEnv("SAIL_API_KEY", "");
 			const harness = await createHarness({
 				dispatchBinding: operation === "spawn" ? remoteBinding : undefined,
 				rlmDepth: operation === "spawn" ? 1 : 0,
-				api: "sail-responses",
-				provider: "sail",
-				models: [{ id: "worker" }],
+				provider,
+				models: [{ id: "parent" }, { id: "other" }],
+				settings: { subagentDefaultModel: `${provider}/other` },
 				subagentRuntimeHost: {
 					supportsDispatch: true,
 					deleteRlmSubagentRuntime: async () => {},
@@ -137,12 +138,25 @@ describe("subagent default model setting", () => {
 				},
 			});
 			try {
+				if (operation === "dispatch") {
+					await expect(harness.session.dispatchRlmChild("work")).rejects.toThrow("Sail authentication");
+					await expect(harness.session.dispatchRlmChild("work", { model: `${provider}/parent` })).rejects.toThrow(
+						"fixed Sail Balanced model",
+					);
+				}
+				harness.authStorage.setRuntimeApiKey("sail", "faux-key");
 				const handle =
 					operation === "dispatch"
-						? await harness.session.dispatchRlmChild("work", { name: "worker", inputs: { notes: "notes.txt" } })
+						? await harness.session.dispatchRlmChild("work", {
+								name: "worker",
+								inputs: { notes: "notes.txt" },
+							})
 						: await harness.session.runRlmChild("work", { name: "worker" });
 				const options = await preparing;
-				expect(handle.model).toBe("sail/worker");
+				expect(handle.model).toBe("sail/zai-org/GLM-5.3-Flash");
+				expect(options.model.api).toBe("openai-responses");
+				expect(options.model.headers?.["X-Sail-Completion-Window"]).toBe("balanced");
+				expect(harness.session.model?.provider).toBe(provider);
 				expect(options.dispatch).toEqual(operation === "dispatch" ? { inputs: { notes: "notes.txt" } } : undefined);
 				expect(harness.session.getRlmChildRunStatus(handle.rlm_child_id)).toBe("queued");
 				await harness.session.deleteRlmSubagent(handle.rlm_child_id);
@@ -150,6 +164,7 @@ describe("subagent default model setting", () => {
 				expect((await harness.session.listRlmSubagents()).subagents).toEqual([]);
 			} finally {
 				harness.cleanup();
+				vi.unstubAllEnvs();
 			}
 		},
 	);
@@ -159,27 +174,6 @@ describe("subagent default model setting", () => {
 		try {
 			await expect(harness.session.dispatchRlmChild("work", { name: "worker" })).rejects.toThrow("daemon runtime");
 			expect((await harness.session.listRlmSubagents()).subagents).toEqual([]);
-		} finally {
-			harness.cleanup();
-		}
-	});
-
-	it("surfaces a Sail inference failure without automatic retry or backup routing", async () => {
-		const harness = await createHarness({
-			api: "sail-responses",
-			provider: "sail",
-			models: [{ id: "worker" }, { id: "backup" }],
-			settings: { providerBackupModel: "sail/backup", retry: { enabled: true, maxRetries: 1, baseDelayMs: 0 } },
-		});
-		try {
-			harness.setResponses([
-				fauxAssistantMessage("", { stopReason: "error", errorMessage: "Sail poll connection lost" }),
-				fauxAssistantMessage("must not run"),
-			]);
-			await harness.session.prompt("work");
-			expect(harness.faux.state.callCount).toBe(1);
-			expect(harness.eventsOfType("auto_retry_start")).toEqual([]);
-			expect(harness.session.model?.id).toBe("worker");
 		} finally {
 			harness.cleanup();
 		}

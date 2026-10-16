@@ -1,14 +1,7 @@
 import { join } from "node:path";
 import { Agent, type AgentMessage, type ThinkingLevel } from "@earendil-works/pi-agent-core";
-import {
-	type Api,
-	clampThinkingLevel,
-	type Message,
-	type Model,
-	streamSimple,
-	supportsFastMode,
-} from "@earendil-works/pi-ai";
-import { APP_NAME, getAgentDir } from "../config.js";
+import { clampThinkingLevel, type Message, type Model, streamSimple, supportsFastMode } from "@earendil-works/pi-ai";
+import { getAgentDir } from "../config.js";
 import { AgentSession } from "./agent-session.js";
 import type { AgentSessionCreationOptions } from "./agent-session-services.js";
 import { formatNoModelsAvailableMessage } from "./auth-guidance.js";
@@ -161,16 +154,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
 	const sessionManager = options.sessionManager ?? SessionManager.create(cwd, getDefaultSessionDir(cwd, agentDir));
-	const sailProvider =
-		options.dispatchBinding || (options.rlmDepth ?? sessionManager.getHeader()?.rlmDepth ?? 0) > 0
-			? "sail"
-			: "sail-asap";
-	const routeSailModel = (selected: Model<Api>): Model<Api> => {
-		if (APP_NAME !== "agent-projects" || selected.api !== "sail-responses") return selected;
-		const routed = modelRegistry.find(sailProvider, selected.id);
-		if (!routed) throw new Error(`Sail model ${selected.id} is unavailable for ${sailProvider}`);
-		return routed;
-	};
 
 	// Ensure MCP providers are registered and built-in MCP skills are gated by
 	// auth even on the bare SDK path (not just the CLI's createAgentSessionServices).
@@ -232,7 +215,6 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 			modelFallbackMessage += `. Using ${model.provider}/${model.id}`;
 		}
 	}
-	if (model) model = routeSailModel(model);
 
 	let thinkingLevel = options.thinkingLevel;
 
@@ -310,13 +292,12 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 		},
 		convertToLlm: convertToLlmWithBlockImages,
 		streamFn: async (model, context, options) => {
-			const selected = routeSailModel(model);
-			const auth = await modelRegistry.getApiKeyAndHeaders(selected, options?.headers);
+			const auth = await modelRegistry.getApiKeyAndHeaders(model, options?.headers);
 			if (!auth.ok) {
 				throw new Error(auth.error);
 			}
 			const providerRetrySettings = settingsManager.getProviderRetrySettings();
-			const requestModel = auth.requestModel ?? selected;
+			const requestModel = auth.requestModel ?? model;
 			return streamSimple(requestModel, context, {
 				...options,
 				apiKey: auth.apiKey,

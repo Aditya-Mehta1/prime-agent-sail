@@ -1479,42 +1479,46 @@ async function loadModelsDevData(): Promise<Model<any>[]> {
 	}
 }
 
-async function fetchSailModels(): Promise<Model<"sail-responses">[]> {
-	// Rates and context: https://docs.sailresearch.com/models and /pricing,
-	// checked 2026-09-20. Keep output conservative until larger runs are verified.
-	const entries: (Pick<Model<"sail-responses">, "id" | "name" | "cost" | "thinkingLevelMap"> & {
-		asapCost: Model<"sail-responses">["cost"];
-	})[] = [
+async function fetchSailModels(): Promise<Model<"openai-responses">[]> {
+	// Rates: https://docs.sailresearch.com/pricing, checked 2026-10-15; keep output conservative until verified.
+	const base = {
+		api: "openai-responses" as const,
+		compat: { sendSessionIdHeader: false, supportsLongCacheRetention: false, supportsServiceTier: false },
+		baseUrl: "https://api.sailresearch.com/v1",
+		reasoning: true,
+		input: ["text"] as ["text"],
+		contextWindow: 1000000,
+		maxTokens: 8192,
+		featured: true,
+	};
+	const models: Model<"openai-responses">[] = [
 		{
+			...base,
 			id: "zai-org/GLM-5.3",
-			name: "GLM 5.3",
-			cost: { input: 0.4, output: 1.8, cacheRead: 0.08, cacheWrite: 0 },
-			asapCost: { input: 0.98, output: 3.08, cacheRead: 0.18, cacheWrite: 0 },
+			name: "GLM 5.3 (ASAP)",
+			provider: "sail-asap",
+			headers: { "X-Sail-Completion-Window": "asap" },
+			cost: { input: 0.98, output: 3.08, cacheRead: 0.18, cacheWrite: 0 },
 			// Sail rejects reasoning=none; low is GLM-5.3's lowest native tier.
 			thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
 		},
 		{
+			...base,
 			id: "zai-org/GLM-5.3-Flash",
-			name: "GLM 5.3 Flash",
-			cost: { input: 0.05, output: 0.18, cacheRead: 0.01, cacheWrite: 0 },
-			asapCost: { input: 0.11, output: 0.35, cacheRead: 0.02, cacheWrite: 0 },
+			name: "GLM 5.3 Flash (ASAP)",
+			provider: "sail-asap",
+			headers: { "X-Sail-Completion-Window": "asap" },
+			cost: { input: 0.11, output: 0.35, cacheRead: 0.02, cacheWrite: 0 },
+		},
+		{
+			...base,
+			id: "zai-org/GLM-5.3-Flash",
+			name: "GLM 5.3 Flash (Balanced)",
+			provider: "sail",
+			headers: { "X-Sail-Completion-Window": "balanced" },
+			cost: { input: 0.08, output: 0.28, cacheRead: 0.02, cacheWrite: 0 },
 		},
 	];
-	const models = entries.flatMap(({ asapCost, ...entry }) =>
-		["sail-asap", "sail"].map((provider): Model<"sail-responses"> => ({
-			...entry,
-			name: `${entry.name} (${provider === "sail-asap" ? "ASAP" : "Flex"})`,
-			cost: provider === "sail-asap" ? asapCost : entry.cost,
-			api: "sail-responses",
-			provider,
-			baseUrl: "https://api.sailresearch.com/v1",
-			reasoning: true,
-			input: ["text"],
-			contextWindow: 1000000,
-			maxTokens: 8192,
-			featured: true,
-		})),
-	);
 	if (process.env.SAIL_API_KEY) {
 		const response = await fetch("https://api.sailresearch.com/v1/models", {
 			headers: { Authorization: `Bearer ${process.env.SAIL_API_KEY}` },

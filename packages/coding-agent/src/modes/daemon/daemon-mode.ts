@@ -3406,7 +3406,7 @@ export class AgentDaemon {
 			}
 			if (
 				dispatchBinding &&
-				(!rehydratedModel || rehydratedModel.provider !== "sail" || rehydratedModel.api !== "sail-responses")
+				(!rehydratedModel || rehydratedModel.provider !== "sail" || rehydratedModel.api !== "openai-responses")
 			) {
 				throw new Error(`Sail model unavailable for dispatched child ${entry.childId}`);
 			}

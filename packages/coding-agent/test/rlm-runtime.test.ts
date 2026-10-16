@@ -16,8 +16,14 @@ bridge = types.ModuleType("rlm.repl")
 bridge.host_request = request
 sys.modules["rlm.repl"] = bridge
 async def main():
-    handle = await rlm.rlm.dispatch("task", name="worker", model="sail/model", thinking="high", inputs={"notes": Path("notes.txt")})
+    handle = await rlm.rlm.dispatch("task", name="worker", thinking="high", inputs={"notes": Path("notes.txt")})
     await rlm.spawn("local", name="worker")
+    for dispatch in (rlm.dispatch, rlm.rlm.dispatch):
+        try:
+            await dispatch("task", name="worker", model="sail/model")
+        except TypeError:
+            continue
+        raise AssertionError("dispatch accepted a model override")
     print(json.dumps({"requests": requests, "handle": {"id": handle.rlm_child_id, "path": str(handle.session_dir), "typed": isinstance(handle, rlm.RLMSpawnHandle)}}))
 asyncio.run(main())`;
 		const child = spawnSync("python3", ["-c", program], {
@@ -31,7 +37,7 @@ asyncio.run(main())`;
 				{
 					type: "rlm.dispatch",
 					prompt: "task",
-					kwargs: { name: "worker", model: "sail/model", thinking: "high", inputs: { notes: "notes.txt" } },
+					kwargs: { name: "worker", thinking: "high", inputs: { notes: "notes.txt" } },
 				},
 				{ type: "rlm.run", prompt: "local", kwargs: { name: "worker" } },
 			],

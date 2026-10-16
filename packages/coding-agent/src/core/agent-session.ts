@@ -28,6 +28,7 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	getModel,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	modelsAreEqual,
@@ -4256,11 +4257,7 @@ export class AgentSession {
 
 		const lastAssistant = this._findLastAssistantInMessages(event.messages);
 		const concreteAuthFailure = lastAssistant ? this._isConcreteProviderAuthFailure(lastAssistant) : false;
-		if (
-			!lastAssistant ||
-			lastAssistant.api === "sail-responses" ||
-			(!this._isRetryableError(lastAssistant) && !concreteAuthFailure)
-		) {
+		if (!lastAssistant || (!this._isRetryableError(lastAssistant) && !concreteAuthFailure)) {
 			return;
 		}
 		if (concreteAuthFailure) {
@@ -8046,9 +8043,7 @@ export class AgentSession {
 	}
 
 	async setModel(model: Model<any>, options: ModelSelectOptions = {}): Promise<void> {
-		if (this.dispatchBinding && (model.provider !== "sail" || model.api !== "sail-responses")) {
-			throw new Error("Dispatched sessions require a Sail Flex model");
-		}
+		if (this.dispatchBinding) throw new Error("Dispatched sessions use a fixed Sail Balanced model");
 		// Explicit selection recovers from a stale-auth lockout, but only a fully
 		// validated switch commits the clear (single owner): failed selections never unlock.
 		const staleOnly =
@@ -8111,6 +8106,7 @@ export class AgentSession {
 		direction: "forward" | "backward" = "forward",
 		options: ModelSelectOptions = {},
 	): Promise<ModelCycleResult | undefined> {
+		if (this.dispatchBinding) return undefined;
 		if (this._scopedModels.length > 0) {
 			return this._cycleScopedModel(direction, options);
 		}
@@ -8121,9 +8117,7 @@ export class AgentSession {
 		direction: "forward" | "backward",
 		options: ModelSelectOptions,
 	): Promise<ModelCycleResult | undefined> {
-		const availableModels = (await this._modelRegistry.refreshAvailableModels()).filter(
-			(model) => !this.dispatchBinding || (model.provider === "sail" && model.api === "sail-responses"),
-		);
+		const availableModels = await this._modelRegistry.refreshAvailableModels();
 		const scopedModels = this._scopedModels.filter((scoped) =>
 			availableModels.some((model) => modelsAreEqual(model, scoped.model)),
 		);
@@ -8165,9 +8159,7 @@ export class AgentSession {
 		direction: "forward" | "backward",
 		options: ModelSelectOptions,
 	): Promise<ModelCycleResult | undefined> {
-		const availableModels = (await this._modelRegistry.refreshAvailableModels()).filter(
-			(model) => !this.dispatchBinding || (model.provider === "sail" && model.api === "sail-responses"),
-		);
+		const availableModels = await this._modelRegistry.refreshAvailableModels();
 		if (availableModels.length <= 1) return undefined;
 
 		const currentModel = this.model;
@@ -12013,6 +12005,7 @@ export class AgentSession {
 			throw new Error(`Unsupported ${operation} kwargs: ${unsupportedKwargs.sort().join(", ")}`);
 		}
 		const requestedSessionName = normalizeRequestedRlmSubagentSessionName(rawName, operation);
+		if (remote && rawModel !== undefined) throw new Error(`${operation} uses a fixed Sail Balanced model`);
 		const requestedModel = normalizeRequestedRlmSubagentModel(rawModel, operation);
 		const requestedThinkingLevel = normalizeRequestedRlmSubagentThinkingLevel(rawThinking, operation);
 		if (requestedSessionName) assertDirectAgentMessageTarget(requestedSessionName);
@@ -12037,16 +12030,12 @@ export class AgentSession {
 		let childSessionDir: string;
 		try {
 			if (requestedSessionName) await this._assertRlmSubagentSessionNameAvailable(requestedSessionName, true);
-			// An unpinned spawn model resolves against the persisted subagent
-			// default; an unavailable default fails the spawn instead of silently
-			// inheriting the parent model.
-			modelSelection = await this._resolveRlmSubagentModel(
-				requestedModel ?? this.settingsManager.getSubagentDefaultModel(),
-			);
-			if (remote && (modelSelection.model.provider !== "sail" || modelSelection.model.api !== "sail-responses")) {
-				throw new Error(
-					`${operation} requires a Sail Flex model; set model or the subagent default to a sail model`,
-				);
+			modelSelection = remote
+				? { model: getModel("sail", "zai-org/GLM-5.3-Flash") }
+				: await this._resolveRlmSubagentModel(requestedModel ?? this.settingsManager.getSubagentDefaultModel());
+			if (remote) {
+				const auth = await this._modelRegistry.getApiKeyAndHeaders(modelSelection.model);
+				if (!auth.ok || !auth.apiKey) throw new Error("Sail Balanced dispatch requires Sail authentication");
 			}
 			if (requestedThinkingLevel !== undefined) {
 				const supported = getSupportedThinkingLevels(modelSelection.model) as ThinkingLevel[];
@@ -12628,7 +12617,7 @@ export class AgentSession {
 	}
 
 	private _isRetryableError(message: AssistantMessage): boolean {
-		if (message.stopReason !== "error" || !message.errorMessage || message.api === "sail-responses") return false;
+		if (message.stopReason !== "error" || !message.errorMessage) return false;
 
 		const contextWindow = this.model?.contextWindow ?? 0;
 		if (isContextOverflow(message, contextWindow)) return false;
@@ -12759,8 +12748,7 @@ export class AgentSession {
 		},
 	): Promise<boolean> {
 		const settings = this.settingsManager.getRetrySettings();
-		// A failed poll may leave the submitted Flex response running remotely.
-		if (message.api === "sail-responses" || !settings.enabled) {
+		if (!settings.enabled) {
 			this._markProviderAuthStaleForRetryFailure(message, options);
 			this._retryAuthFailureSources = [];
 			this._resolveRetry();

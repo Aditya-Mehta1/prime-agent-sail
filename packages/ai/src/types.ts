@@ -7,7 +7,6 @@ export type KnownApi =
 	| "openai-completions"
 	| "mistral-conversations"
 	| "openai-responses"
-	| "sail-responses"
 	| "azure-openai-responses"
 	| "openai-codex-responses"
 	| "anthropic-messages"
@@ -319,6 +318,8 @@ export interface OpenAICompletionsCompat {
 
 /** Compatibility settings for OpenAI Responses APIs. */
 export interface OpenAIResponsesCompat {
+	/** Whether the provider accepts service_tier and applies its pricing. Default: true (false for Copilot). */
+	supportsServiceTier?: boolean;
 	/** Whether to send the OpenAI `session_id` cache-affinity header from `options.sessionId` when caching is enabled. Default: true. */
 	sendSessionIdHeader?: boolean;
 	/** Whether the provider supports `prompt_cache_retention: "24h"`. Default: true. */
