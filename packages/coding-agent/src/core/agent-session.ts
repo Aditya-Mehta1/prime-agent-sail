@@ -12031,7 +12031,7 @@ export class AgentSession {
 		try {
 			if (requestedSessionName) await this._assertRlmSubagentSessionNameAvailable(requestedSessionName, true);
 			modelSelection = remote
-				? { model: getModel("sail", "zai-org/GLM-5.3-Flash") }
+				? { model: getModel("sail", "deepseek-ai/DeepSeek-V4.1-Flash") }
 				: await this._resolveRlmSubagentModel(requestedModel ?? this.settingsManager.getSubagentDefaultModel());
 			if (remote) {
 				const auth = await this._modelRegistry.getApiKeyAndHeaders(modelSelection.model);
@@ -12191,7 +12191,7 @@ export class AgentSession {
 				spawnCode,
 				sessionDir: childSessionDir,
 				model: modelSelection.model,
-				thinkingLevel: requestedThinkingLevel,
+				thinkingLevel: requestedThinkingLevel ?? (remote ? "max" : undefined),
 				spawnedByRequestId,
 			}),
 			dispatch,

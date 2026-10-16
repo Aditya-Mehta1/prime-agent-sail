@@ -108,9 +108,14 @@ describe("subagent default model setting", () => {
 		}
 	});
 
-	it.each(["dispatch", "spawn"] as const)(
-		"uses Sail Balanced for %s regardless of foreground model or subagent default",
-		async (operation) => {
+	it.each([
+		["dispatch", undefined],
+		["spawn", undefined],
+		["dispatch", "high"],
+		["spawn", "high"],
+	] as const)(
+		"uses Sail Balanced for %s with thinking %s regardless of foreground model or subagent default",
+		async (operation, thinking) => {
 			let started!: (options: CreateRlmSubagentRuntimeOptions) => void;
 			const preparing = new Promise<CreateRlmSubagentRuntimeOptions>((resolve) => {
 				started = resolve;
@@ -149,11 +154,13 @@ describe("subagent default model setting", () => {
 					operation === "dispatch"
 						? await harness.session.dispatchRlmChild("work", {
 								name: "worker",
+								thinking,
 								inputs: { notes: "notes.txt" },
 							})
-						: await harness.session.runRlmChild("work", { name: "worker" });
+						: await harness.session.runRlmChild("work", { name: "worker", thinking });
 				const options = await preparing;
-				expect(handle.model).toBe("sail/zai-org/GLM-5.3-Flash");
+				expect(handle.model).toBe("sail/deepseek-ai/DeepSeek-V4.1-Flash");
+				expect(options.thinkingLevel).toBe(thinking ?? "max");
 				expect(options.model.api).toBe("openai-responses");
 				expect(options.model.headers?.["X-Sail-Completion-Window"]).toBe("balanced");
 				expect(harness.session.model?.provider).toBe(provider);
