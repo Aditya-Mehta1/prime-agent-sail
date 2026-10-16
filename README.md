@@ -59,7 +59,9 @@ flowchart LR
 ```bash
 npm ci
 npm link
+```
 
+```bash
 cd /path/to/project
 prime-agent-sail
 ```
