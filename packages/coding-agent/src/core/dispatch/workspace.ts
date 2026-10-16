@@ -181,7 +181,7 @@ rm -rf ${GUEST_INSTALL}/project
 		success = true;
 		return binding;
 	} finally {
-		await rm(staging, { recursive: true, force: true });
+		await rm(staging, { recursive: true, force: true }).catch(() => {});
 		if (!success && binding) await terminateDispatchWorkspace(binding);
 	}
 }
