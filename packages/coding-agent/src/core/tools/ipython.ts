@@ -5,7 +5,7 @@ import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { IMAGE_MIME_TYPES } from "../../utils/mime.js";
 import { resolveKernelBashShell } from "../../utils/shell.js";
-import { createDispatchKernelLauncher, prepareDispatchPythonSkills } from "../dispatch/kernel.js";
+import { createDispatchKernelTransport, prepareDispatchPythonSkills } from "../dispatch/kernel.js";
 import type { DispatchBinding } from "../dispatch/types.js";
 import type { ExtensionContext, ToolDefinition } from "../extensions/types.js";
 import { withKernelBootPermit } from "../kernel/boot-gate.js";
@@ -494,7 +494,7 @@ export class IpythonKernelProvisioner {
 				...(commandPrefix ? { PRIME_AGENT_BASH_COMMAND_PREFIX: commandPrefix } : {}),
 			};
 			const m = new ReplKernelManager({
-				processLauncher: binding ? createDispatchKernelLauncher(binding, env) : undefined,
+				remoteTransport: binding ? createDispatchKernelTransport(binding, env) : undefined,
 				python: this.options?.python,
 				cwd: binding?.guestCwd ?? this.cwd,
 				// bash() reads these to pick its shell and command prefix.

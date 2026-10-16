@@ -5,6 +5,7 @@ import json
 import os
 import queue
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -21,7 +22,7 @@ _EOF = object()
 class ReplProcess:
     """Drives one `python -m rlm.repl` subprocess over the JSON-lines protocol."""
 
-    def __init__(self, env: dict[str, str] | None = None) -> None:
+    def __init__(self, env: dict[str, str] | None = None, args: tuple[str, ...] = ()) -> None:
         env = {
             **os.environ,
             "PYTHONPATH": SRC + os.pathsep + os.environ.get("PYTHONPATH", ""),
@@ -29,7 +30,7 @@ class ReplProcess:
         }
         self.spawned_at = time.monotonic()
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "rlm.repl"],
+            [sys.executable, "-m", "rlm.repl", *args],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -98,6 +99,79 @@ class ReplProcess:
         for stream in (self.proc.stdin, self.proc.stdout):
             if stream is not None:
                 stream.close()
+
+
+class SocketReplProcess(ReplProcess):
+    def __init__(self) -> None:
+        super().__init__(args=("--socket",))
+        try:
+            descriptor = super().read_event()
+            self.port = descriptor["port"]
+            self.connect()
+        except BaseException:
+            super().close()
+            raise
+
+    def connect(self) -> None:
+        self.connection = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.stream = self.connection.makefile("r")
+
+    def disconnect(self) -> None:
+        self.stream.close()
+        self.connection.close()
+
+    def read_event(self, timeout: float = 30.0) -> dict:
+        self.connection.settimeout(timeout)
+        line = self.stream.readline()
+        if not line:
+            raise EOFError("runtime closed its socket")
+        self.raw_lines.append(line)
+        return json.loads(line)
+
+    def send(self, request: dict) -> None:
+        self.connection.sendall((json.dumps(request) + "\n").encode())
+
+    def close(self) -> None:
+        self.disconnect()
+        super().close()
+
+
+class ReplSocketTest(unittest.TestCase):
+    def test_socket_reconnect_keeps_state_callbacks_interrupts_and_shutdown(self):
+        repl = SocketReplProcess()
+        self.addCleanup(repl.close)
+        self.assertEqual(repl.ready()[0]["event"], "ready")
+        events = repl.execute(
+            "setup", "import os, threading\nlock = threading.Lock()\nidentity = id(lock)\nvalue = 41\nos.getpid()"
+        )
+        self.assertEqual(one(events, "result")["text"], str(repl.proc.pid))
+        repl.disconnect()
+        repl.connect()
+        events = repl.execute("resumed", "value += 1\n(value, id(lock) == identity)")
+        self.assertEqual(one(events, "result")["text"], "(42, True)")
+        repl.send({
+            "type": "execute", "id": "callback",
+            "code": "from rlm.repl import host_request\nawait host_request({'type': 'probe'})",
+        })
+        request = repl.read_event()
+        self.assertEqual(request["event"], "host_request")
+        reply_ok(repl, request)
+        self.assertEqual(one(repl.until_done("callback"), "done")["status"], "ok")
+        repl.send({"type": "execute", "id": "busy", "code": "print('running', end='')\nthreading.Event().wait()"})
+        self.assertEqual(repl.read_event()["text"], "running")
+        repl.send({"type": "interrupt", "id": "busy"})
+        self.assertEqual(one(repl.until_done("busy"), "error")["ename"], "KeyboardInterrupt")
+        self.assertEqual(one(repl.execute("after-interrupt", "value"), "result")["text"], "42")
+        events = repl.execute("background", "from rlm import bash\nhandle = bash('printf background')")
+        request = wait_for_host_request(repl, events)
+        self.assertEqual(request["data"]["type"], "bash.completed")
+        reply_ok(repl, request)
+        activity = "application/vnd.prime-agent.bash-activity+json"
+        while repl.read_event().get("data", {}).get(activity, {}).get("active") is not False:
+            pass
+        self.assertEqual(repl.shutdown(), 0)
+        with self.assertRaises(EOFError):
+            repl.read_event()
 
 
 def stream_text(events: list[dict], stream: str) -> str:

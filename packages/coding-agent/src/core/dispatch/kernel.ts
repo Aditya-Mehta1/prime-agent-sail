@@ -1,12 +1,9 @@
-import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import { isAbsolute, posix, relative, sep } from "node:path";
-import { fileURLToPath } from "node:url";
+import type { Client, ExecOptions, ExecProcess } from "@sailresearch/sdk";
+import WebSocket from "ws";
 import { getBundledSkillsDir } from "../../config.js";
-import { spawnHidden } from "../../utils/child-process.js";
-import type { KernelManagerOptions } from "../kernel/shared.js";
+import type { KernelTransport } from "../kernel/shared.js";
 import type { PythonSkillRuntimeInfo } from "../skills.js";
-import type { SailRelayConfig } from "./relay.js";
 import { SailClient } from "./sail-client.js";
 import type { DispatchBinding } from "./types.js";
 import { shellQuote } from "./workspace.js";
@@ -37,109 +34,197 @@ export async function prepareDispatchPythonSkills(
 		);
 }
 
-/** A session cannot replace its kernel until the previous exec is known stopped. */
-const activeKernels = new Map<string, { boxId: string }>();
+const activeKernels = new Map<string, string>();
 
-export function hasDispatchKernels(boxId: string): boolean {
-	return [...activeKernels.values()].some((kernel) => kernel.boxId === boxId);
+export function hasDispatchKernels(boxId: string, guestStateDir?: string): boolean {
+	if (guestStateDir === undefined) return [...activeKernels.values()].includes(boxId);
+	const key = `${boxId}:${guestStateDir}`;
+	return [...activeKernels.keys()].some((active) => active === key || active.startsWith(`${key}/`));
 }
 
-export function createDispatchKernelLauncher(
-	binding: DispatchBinding,
-	env: Record<string, string>,
-): NonNullable<KernelManagerOptions["processLauncher"]> {
-	const states = new WeakMap<ChildProcess, { done: Promise<void>; stop?: Promise<void> }>();
+export function createDispatchKernelTransport(binding: DispatchBinding, env: Record<string, string>): KernelTransport {
+	const client = new SailClient();
+	const key = `${binding.boxId}:${binding.guestStateDir}`;
+	const command = `exec ${shellQuote(binding.guestPython)} -u -m rlm.repl --socket`;
+	const options: ExecOptions = {
+		cwd: binding.guestCwd,
+		env: {
+			...Object.fromEntries(
+				Object.entries(env).filter(([key]) =>
+					[
+						"RLM_DEPTH",
+						"RLM_MAX_DEPTH",
+						"PRIME_AGENT_BASH_SHELL",
+						"PRIME_AGENT_BASH_COMMAND_PREFIX",
+						"SERPER_API_KEY",
+					].includes(key),
+				),
+			),
+			GH_HOST: "github.com",
+			VIRTUAL_ENV: posix.dirname(posix.dirname(binding.guestPython)),
+			RLM_SESSION_DIR: binding.guestStateDir,
+			RLM_HARNESS_STATE_DIR: `${binding.guestStateDir}/harness`,
+			RLM_GLOBAL_HARNESS_STATE_DIR: `${binding.guestStateDir}/global-harness`,
+			PRIME_AGENT_CODING_AGENT_DIR: binding.guestStateDir,
+		},
+	};
+	let sdk: Client;
+	let execId: string | undefined;
+	let port: number;
+	let handlers: Parameters<KernelTransport["start"]>[0];
+	let socket: WebSocket | undefined;
+	let startup: Promise<void> | undefined;
+	let stopping: Promise<void> | undefined;
+	let writes: Promise<void> = Promise.resolve();
+	let ended = false;
+	let ownsKey = false;
+
+	const release = () => {
+		const current = socket;
+		socket = undefined;
+		current?.close(1000);
+	};
+	const connect = async (): Promise<WebSocket> => {
+		if (stopping || ended) throw new Error("Sail kernel has stopped");
+		if (socket?.readyState === WebSocket.OPEN) return socket;
+		const config = await client.config;
+		const url = new URL(`/v1/sailboxes/${encodeURIComponent(binding.boxId)}/tunnel`, config.sailboxApiUrl);
+		url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+		url.searchParams.set("port", String(port));
+		const current = new WebSocket(url, {
+			headers: { Authorization: `Bearer ${config.apiKey}` },
+			handshakeTimeout: 30_000,
+			perMessageDeflate: false,
+		});
+		socket = current;
+		current.on("message", (data, binary) => {
+			if (socket !== current) return;
+			if (binary) handlers.data(data as Buffer);
+			else {
+				ended = true;
+				release();
+				handlers.exit();
+			}
+		});
+		current.on("error", (error) => {
+			if (socket !== current) return;
+			socket = undefined;
+			handlers.error(error);
+		});
+		current.on("close", (code, reason) => {
+			if (socket !== current) return;
+			socket = undefined;
+			if (code === 1000) {
+				ended = true;
+				handlers.exit();
+			} else handlers.error(new Error(`Sail tunnel closed (${code}): ${reason}`));
+		});
+		await new Promise<void>((resolve, reject) => {
+			current.once("open", resolve);
+			current.once("error", reject);
+		});
+		return current;
+	};
+
 	return {
-		spawn() {
-			const key = `${binding.boxId}:${binding.guestStateDir}`;
+		async start(callbacks) {
 			if (activeKernels.has(key))
 				throw new Error("Previous Sail kernel termination is unverified; cannot start another kernel");
-			const owner = { boxId: binding.boxId };
-			activeKernels.set(key, owner);
-			const release = () => {
-				if (activeKernels.get(key) === owner) activeKernels.delete(key);
-			};
-			const compiled = fileURLToPath(new URL("./relay.js", import.meta.url));
-			const entry = existsSync(compiled) ? compiled : fileURLToPath(new URL("./relay.ts", import.meta.url));
-			const args = entry.endsWith(".ts") ? ["--import", import.meta.resolve("tsx"), entry] : [entry];
-			let child: ChildProcess;
-			try {
-				child = spawnHidden(process.execPath, args, { stdio: ["pipe", "pipe", "pipe", "ipc"] });
-			} catch (error) {
-				release();
-				throw error;
-			}
-			let execId: string | undefined;
-			let resolveDone!: () => void;
-			let rejectDone!: (error: Error) => void;
-			const done = new Promise<void>((resolve, reject) => {
-				resolveDone = resolve;
-				rejectDone = reject;
-			});
-			void done.catch(() => undefined);
-			states.set(child, { done });
-			child.on("message", (value: unknown) => {
-				if (!value || typeof value !== "object") return;
-				const message = value as { type?: string; execId?: string; error?: string };
-				if (message.type === "started") execId = message.execId;
-				if (message.type === "remote-exit") {
-					release();
-					resolveDone();
+			activeKernels.set(key, binding.boxId);
+			ownsKey = true;
+			handlers = callbacks;
+			stopping = undefined;
+			execId = undefined;
+			ended = false;
+			writes = Promise.resolve();
+			startup = (async () => {
+				sdk = await client.sdk;
+				let proc: ExecProcess | undefined;
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					proc = await sdk.exec(binding.boxId, command, options);
+					execId = proc.execRequestId;
+					const descriptor = (async () => {
+						let text = "";
+						for await (const chunk of proc.stdout) {
+							text += chunk;
+							if (!text.includes("\n")) continue;
+							const value = JSON.parse(text.slice(0, text.indexOf("\n"))) as { port?: number };
+							if (!Number.isInteger(value.port) || value.port! < 1 || value.port! > 65535)
+								throw new Error("Invalid Sail REPL port");
+							return value.port!;
+						}
+						throw new Error(`Sail REPL exited before listening: ${await proc.stderr.text()}`);
+					})();
+					port = await Promise.race([
+						descriptor,
+						new Promise<never>((_, reject) => {
+							timer = setTimeout(() => reject(new Error("Sail REPL did not start listening")), 30_000);
+						}),
+					]);
+				} finally {
+					clearTimeout(timer);
+					proc?.close();
 				}
-				if (message.type === "cleanup-error") rejectDone(new Error(message.error));
-			});
-			child.once("error", rejectDone);
-			child.once("exit", () =>
-				rejectDone(
-					new Error(
-						`Sail relay exited without confirmed cleanup; manually stop Sailbox ${binding.boxId} exec ${execId ?? "unknown"}`,
-					),
-				),
-			);
-			const config: SailRelayConfig = {
-				boxId: binding.boxId,
-				cwd: binding.guestCwd,
-				command: `exec ${shellQuote(binding.guestPython)} -u -m rlm.repl`,
-				env: {
-					...Object.fromEntries(
-						Object.entries(env).filter(([key]) =>
-							[
-								"RLM_DEPTH",
-								"RLM_MAX_DEPTH",
-								"PRIME_AGENT_BASH_SHELL",
-								"PRIME_AGENT_BASH_COMMAND_PREFIX",
-								"SERPER_API_KEY",
-							].includes(key),
-						),
-					),
-					GH_HOST: "github.com",
-					VIRTUAL_ENV: posix.dirname(posix.dirname(binding.guestPython)),
-					RLM_SESSION_DIR: binding.guestStateDir,
-					RLM_HARNESS_STATE_DIR: `${binding.guestStateDir}/harness`,
-					RLM_GLOBAL_HARNESS_STATE_DIR: `${binding.guestStateDir}/global-harness`,
-					PRIME_AGENT_CODING_AGENT_DIR: binding.guestStateDir,
-				},
-			};
-			child.send?.(config, (error) => {
-				if (error) rejectDone(error);
-			});
-			return child;
+				await connect();
+			})();
+			return startup;
 		},
-		stop(child) {
-			const state = states.get(child);
-			if (!state) return Promise.reject(new Error("Unknown Sail relay process"));
-			state.stop ??= new Promise<void>((resolve, reject) => {
-				const deadline = setTimeout(
-					() => reject(new Error(`Sail kernel cleanup timed out; manually inspect Sailbox ${binding.boxId}`)),
-					30_000,
-				);
-				void state.done.then(resolve, reject).finally(() => clearTimeout(deadline));
-				if (child.connected)
-					child.send({ type: "stop" }, (error) => {
-						if (error) reject(error);
+		write(line) {
+			const write = writes.then(async () => {
+				const current = await connect();
+				const bytes = Buffer.from(line);
+				for (let offset = 0; offset < bytes.length; offset += 1024 * 1024) {
+					await new Promise<void>((resolve, reject) => {
+						current.send(bytes.subarray(offset, offset + 1024 * 1024), (error) =>
+							error ? reject(error) : resolve(),
+						);
 					});
+				}
 			});
-			return state.stop;
+			writes = write.catch(() => undefined);
+			return write;
+		},
+		release,
+		stop() {
+			if (!ownsKey) return Promise.resolve();
+			stopping ??= (async () => {
+				await startup?.catch(() => undefined);
+				release();
+				if (!execId) {
+					activeKernels.delete(key);
+					ownsKey = false;
+					return;
+				}
+				let proc: ExecProcess | undefined;
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				try {
+					await Promise.race([
+						(async () => {
+							proc = await sdk.exec(binding.boxId, command, { ...options, idempotencyKey: execId });
+							if (!ended) await proc.cancel({ force: true });
+							await proc.wait();
+						})(),
+						new Promise<never>((_, reject) => {
+							timer = setTimeout(
+								() =>
+									reject(
+										new Error(
+											`Sail kernel cleanup timed out; inspect Sailbox ${binding.boxId} exec ${execId}`,
+										),
+									),
+								30_000,
+							);
+						}),
+					]);
+					activeKernels.delete(key);
+					ownsKey = false;
+				} finally {
+					clearTimeout(timer);
+					proc?.close();
+				}
+			})();
+			return stopping;
 		},
 	};
 }

@@ -7,13 +7,17 @@ const executeFile = promisify(execFile);
 const GITHUB_AUTH = "prime-dispatch-github";
 
 export class SailClient {
-	get sdk(): Promise<Client> {
+	get config() {
 		return AuthStorage.create()
 			.getApiKey("sail")
 			.then((apiKey) => {
 				if (!apiKey) throw new Error("Sail authentication required. Set SAIL_API_KEY or log in to Sail.");
-				return Client.fromConfig({ ...resolveConfig(), apiKey });
+				return { ...resolveConfig(), apiKey };
 			});
+	}
+
+	get sdk(): Promise<Client> {
+		return this.config.then((config) => Client.fromConfig(config));
 	}
 
 	async createBox(appId: string, name: string) {
