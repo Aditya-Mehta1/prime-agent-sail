@@ -57,23 +57,18 @@ describe("dispatch working tree capture", () => {
 		}
 	});
 
-	it("loads persisted identity and rejects an unsupported binding version", async () => {
+	it("loads persisted identity and rejects an invalid binding", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "dispatch-binding-"));
 		try {
 			expect(loadDispatchBinding(directory)).toBeUndefined();
 			await writeFile(
 				join(directory, "dispatch.json"),
-				JSON.stringify({
-					version: 2,
-					ownsBox: true,
-					boxId: "box-retained",
-					guestCwd: "/repo",
-				}),
+				JSON.stringify({ ownsBox: true, boxId: "box-retained", guestCwd: "/repo" }),
 			);
 			expect(loadDispatchBinding(directory)?.boxId).toBe("box-retained");
 			await writeFile(
 				join(directory, "dispatch.json"),
-				JSON.stringify({ version: 1, boxId: "box-retained", guestCwd: "/repo" }),
+				JSON.stringify({ boxId: "box-retained", guestCwd: "/repo" }),
 			);
 			expect(() => loadDispatchBinding(directory)).toThrow("Invalid dispatch binding");
 		} finally {

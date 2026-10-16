@@ -1,5 +1,4 @@
 export interface DispatchBinding {
-	version: 2;
 	ownsBox: boolean;
 	boxId: string;
 	guestRepoDir: string;

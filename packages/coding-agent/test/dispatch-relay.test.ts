@@ -167,7 +167,6 @@ async function fixture() {
 	vi.stubEnv("GITHUB_TOKEN", "fixture-github-token");
 	vi.stubEnv("SAILBOX_API_URL", `http://127.0.0.1:${address.port}`);
 	const binding: DispatchBinding = {
-		version: 2,
 		ownsBox: true,
 		boxId: `sb_${randomUUID()}`,
 		guestRepoDir: "/state/repo",

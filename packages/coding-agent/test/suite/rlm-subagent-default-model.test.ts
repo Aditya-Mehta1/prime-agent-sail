@@ -9,7 +9,6 @@ import { createHarness } from "./harness.js";
 const provider = "faux-eng-subagent-default-model";
 
 const remoteBinding: DispatchBinding = {
-	version: 2,
 	ownsBox: true,
 	boxId: "box",
 	guestRepoDir: "/repo",

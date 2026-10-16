@@ -136,7 +136,6 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		// Do not abort the create response: retain its ID and terminate a late allocation.
 		const box = await client.createBox(app.id, `prime-${basename(options.sessionDir)}`);
 		binding = {
-			version: 2,
 			ownsBox: true,
 			boxId: box.sailboxId,
 			guestRepoDir: GUEST_REPO,
@@ -201,7 +200,7 @@ export function loadDispatchBinding(sessionDir: string): DispatchBinding | undef
 	const path = join(sessionDir, "dispatch.json");
 	if (!existsSync(path)) return undefined;
 	const binding = JSON.parse(readFileSync(path, "utf8")) as DispatchBinding;
-	if (binding.version !== 2 || typeof binding.ownsBox !== "boolean" || !binding.boxId || !binding.guestCwd)
+	if (typeof binding.ownsBox !== "boolean" || !binding.boxId || !binding.guestCwd)
 		throw new Error(`Invalid dispatch binding: ${path}`);
 	return binding;
 }
