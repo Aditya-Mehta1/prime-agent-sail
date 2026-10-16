@@ -188,15 +188,12 @@ async def dispatch(
     prompt: str,
     *,
     name: str,
-    thinking: str | None = None,
     inputs: dict[str, str | Path] | None = None,
 ) -> RLMSpawnHandle:
     """Start a Sail Balanced worker in its own Sailbox; inputs maps names to paths to copy."""
     if not isinstance(prompt, str):
         raise TypeError(f"prompt must be str, got {type(prompt).__name__}")
     kwargs: dict[str, Any] = {"name": name}
-    if thinking is not None:
-        kwargs["thinking"] = thinking
     if inputs is not None:
         if not isinstance(inputs, dict) or any(
             not isinstance(key, str) or not isinstance(value, (str, Path))
@@ -570,10 +567,9 @@ class _RLMNamespace:
         prompt: str,
         *,
         name: str,
-        thinking: str | None = None,
         inputs: dict[str, str | Path] | None = None,
     ) -> RLMSpawnHandle:
-        return await dispatch(prompt, name=name, thinking=thinking, inputs=inputs)
+        return await dispatch(prompt, name=name, inputs=inputs)
 
     async def create_session(
         self,
