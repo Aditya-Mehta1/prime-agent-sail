@@ -8,7 +8,9 @@ import {
 	readActiveOrphanProcesses,
 	shouldReapOrphanProcess,
 } from "../core/orphan-process-journal.js";
+import { cleanupSessionDispatchWorkspaces } from "../core/session-file-actions.js";
 import { getProcessStartId } from "../core/session-lease.js";
+import { SessionManager } from "../core/session-manager.js";
 import { DaemonClient } from "../modes/daemon/daemon-client.js";
 import {
 	DAEMON_PROTOCOL_VERSION,
@@ -26,6 +28,7 @@ import {
 	signalProcessGroupIfHeld,
 	spawnSyncHidden,
 } from "../utils/child-process.js";
+import { stopDaemonProcessAndWait } from "./daemon-launch.js";
 import { formatDaemonListTable } from "./daemon-ps-format.js";
 import { promptYesNo } from "./daemon-stop-confirm.js";
 
@@ -80,6 +83,7 @@ const STATUS_ORDER: Record<DaemonStatus, number> = {
 	unreachable: 2,
 	"orphan-file": 3,
 };
+export const DAEMON_SHUTDOWN_TIMEOUT_MS = 120_000;
 const SHUTDOWN_QUIET_PERIOD_MS = 1000;
 const SHUTDOWN_CONVERGENCE_TIMEOUT_MS = 10_000;
 
@@ -672,6 +676,11 @@ async function runShutdownAllConverging(
 	if (force) {
 		await terminateVerifiedResiduals(stopped, failed, handledPids, reportedFailures, assertAdmission);
 	}
+	const saved = await SessionManager.listAll();
+	await cleanupSessionDispatchWorkspaces(
+		saved.map((session) => session.path),
+		true,
+	);
 
 	if (json) {
 		if (failed.length > 0) {
@@ -1226,9 +1235,9 @@ async function reapReachableDaemon(socketPath: string, pid: number | undefined):
 	if (probe.sessionCount !== 0) {
 		return { skipped: `now has ${probe.sessionCount ?? "unknown"} session(s)` };
 	}
-	return (await shutdownDaemon(socketPath, false))
+	return (await stopDaemonProcessAndWait(socketPath, probe))
 		? { reaped: `stopped idle background service${pid ? ` (pid ${pid})` : ""}` }
-		: { skipped: "shutdown request failed" };
+		: { skipped: "could not stop the verified idle background service" };
 }
 
 function removeSocketFile(socketPath: string): boolean {
@@ -1296,9 +1305,8 @@ async function shutdownDaemon(socketPath: string, force: boolean): Promise<boole
 		return false;
 	}
 	try {
-		await client.request({ type: "shutdown", force }, 1500);
-	} catch {
-		// The daemon may still stop; the connectivity check below is the source of truth.
+		const response = await client.request({ type: "shutdown", force }, DAEMON_SHUTDOWN_TIMEOUT_MS);
+		if (!response.success) throw new Error(response.error);
 	} finally {
 		client.close();
 	}

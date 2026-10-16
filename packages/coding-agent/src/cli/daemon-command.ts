@@ -17,7 +17,7 @@ import { spawnHidden } from "../utils/child-process.js";
 import { isLocalPath } from "../utils/paths.js";
 import { isValidThinkingLevel } from "./args.js";
 import { formatSessionListTable } from "./daemon-list-format.js";
-import { runPs, runReap } from "./daemon-ps.js";
+import { DAEMON_SHUTDOWN_TIMEOUT_MS, runPs, runReap } from "./daemon-ps.js";
 
 interface ParsedDaemonClientCommand {
 	command: string;
@@ -1102,7 +1102,7 @@ async function printResponseData(
 	command: Parameters<DaemonClient["request"]>[0],
 	json: boolean,
 ): Promise<void> {
-	const response = await client.request(command);
+	const response = await client.request(command, command.type === "shutdown" ? DAEMON_SHUTDOWN_TIMEOUT_MS : undefined);
 	const data = requireSuccess(response);
 	if (json || data !== undefined) {
 		printJson(data ?? response);

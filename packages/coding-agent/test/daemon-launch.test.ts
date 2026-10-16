@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
@@ -12,6 +13,7 @@ import {
 	shutdownDaemonAndWait,
 } from "../src/cli/daemon-launch.js";
 import { ENV_AGENT_DIR, getDaemonLogPath, VERSION } from "../src/config.js";
+import { getProcessStartId } from "../src/core/session-lease.js";
 import { DAEMON_PROTOCOL_VERSION, DAEMON_SCHEMA_ID } from "../src/modes/daemon/daemon-protocol.js";
 
 interface FakeDaemonOptions {
@@ -118,40 +120,48 @@ async function startFakeDaemon(options: FakeDaemonOptions = {}): Promise<FakeDae
 	};
 }
 
-async function startCrashingDaemon(): Promise<FakeDaemon> {
-	const dir = mkdtempSync(join(tmpdir(), "pa-launch-crash-"));
+async function startSignaledDaemon(crash: boolean): Promise<FakeDaemon & { stopReasonPath: string }> {
+	const dir = mkdtempSync(join(tmpdir(), "pa-launch-signal-"));
 	const socketPath = join(dir, "d.sock");
+	const stopReasonPath = join(dir, "stop-reason");
 	const child = spawn(
 		process.execPath,
 		[
 			"-e",
 			`const { createServer } = require("node:net");
+const { writeFileSync } = require("node:fs");
 const socketPath = process.argv[1];
-const send = (socket, message) => socket.write(JSON.stringify(message) + "\\n");
+const stop = (reason) => {
+	if (reason === "shutdown") writeFileSync(process.argv[2], reason);
+	if (${crash}) process.kill(process.pid, "SIGKILL");
+	else server.close(() => process.exit(0));
+};
+let identity;
 const server = createServer((socket) => {
-	send(socket, {
+	socket.on("error", () => {});
+	socket.write(JSON.stringify({
 		type: "daemon_hello",
 		socketPath,
+		supervisorPid: process.pid,
+		supervisorProcessStartId: identity,
 		protocol: { name: "prime-agent.daemon", version: ${DAEMON_PROTOCOL_VERSION} },
 		schemaId: ${JSON.stringify(DAEMON_SCHEMA_ID)},
-	});
-	let buffer = "";
-	socket.on("data", (chunk) => {
-		buffer += chunk.toString();
-		const newline = buffer.indexOf("\\n");
-		if (newline === -1) return;
-		const wire = JSON.parse(buffer.slice(0, newline));
-		const command = wire.command ?? wire;
-		if (command.type !== "shutdown") return;
-		send(socket, { type: "response", command: "shutdown", id: wire.id ?? command.id, success: true });
-		socket.end(() => process.kill(process.pid, "SIGKILL"));
-	});
+	}) + "\\n");
+	socket.on("data", () => { socket.end(); stop("shutdown"); });
 });
-server.listen(socketPath, () => process.stdout.write("ready\\n"));`,
+process.on("SIGTERM", () => stop("SIGTERM"));
+process.once("message", (value) => {
+	identity = value;
+	server.listen(socketPath, () => process.stdout.write("ready\\n"));
+});`,
 			socketPath,
+			stopReasonPath,
 		],
-		{ stdio: ["ignore", "pipe", "ignore"] },
+		{ stdio: ["ignore", "pipe", "ignore", "ipc"] },
 	);
+	const processStartId = getProcessStartId(child.pid!);
+	assert(processStartId, "Cannot read the test daemon process identity");
+	child.send(processStartId);
 	await new Promise<void>((resolve, reject) => {
 		child.stdout?.once("data", () => resolve());
 		child.once("error", reject);
@@ -159,6 +169,7 @@ server.listen(socketPath, () => process.stdout.write("ready\\n"));`,
 	});
 	return {
 		socketPath,
+		stopReasonPath,
 		close: async () => {
 			if (child.exitCode === null && child.signalCode === null) {
 				child.kill("SIGKILL");
@@ -524,20 +535,10 @@ describe("shutdownDaemonAndWait", () => {
 		expect(await shutdownDaemonAndWait(join(tmpdir(), "pa-launch-missing2.sock"))).toBe(true);
 	});
 
-	it("stops a running daemon and returns true", async () => {
-		const daemon = await startFakeDaemon({ sessions: [{ id: "a", activeSessionId: "a", isStreaming: false }] });
-		cleanups.push(daemon.close);
-		expect(await shutdownDaemonAndWait(daemon.socketPath)).toBe(true);
-	});
-
-	it("accepts an exited daemon that leaves a stale socket behind", async () => {
-		if (process.platform === "win32") {
-			return;
-		}
-
-		const daemon = await startCrashingDaemon();
+	it.each([false, true])("stops replacement daemons with SIGTERM (crash: %s)", async (crash) => {
+		const daemon = await startSignaledDaemon(crash);
 		cleanups.push(daemon.close);
 		expect(await shutdownDaemonAndWait(daemon.socketPath, 100)).toBe(true);
-		expect(existsSync(daemon.socketPath)).toBe(true);
+		expect(existsSync(daemon.stopReasonPath)).toBe(false);
 	});
 });

@@ -8,7 +8,7 @@ import type {
 	AgentSessionServices,
 } from "./agent-session-services.js";
 import { isNoModelsAvailableMessage } from "./auth-guidance.js";
-import { loadDispatchBinding, terminateDispatchWorkspace } from "./dispatch/workspace.js";
+import { loadDispatchBinding } from "./dispatch/workspace.js";
 import type { ReplacedSessionContext, SessionShutdownEvent, SessionStartEvent } from "./extensions/index.js";
 import { emitSessionShutdownEvent } from "./extensions/runner.js";
 import type {
@@ -733,13 +733,6 @@ export class AgentSessionRuntime implements SubagentRuntimeHost {
 			await this.disposeHostedSubagentRuntimes(options.reason);
 		} catch (error) {
 			disposeError ??= error;
-		}
-		if ((options.reason === "killed" || options.reason === "replaced") && this.session.dispatchBinding) {
-			try {
-				await terminateDispatchWorkspace(this.session.dispatchBinding);
-			} catch (error) {
-				disposeError ??= error;
-			}
 		}
 		try {
 			if (disposeError) {

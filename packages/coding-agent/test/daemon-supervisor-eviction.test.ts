@@ -62,7 +62,7 @@ interface SupervisorInternals {
 	runIdleEvictionSweep(now?: number): Promise<void>;
 	recomputeScheduledSessionWake(): Promise<void>;
 	wakeDueScheduledSessions(now?: number): Promise<void>;
-	shutdown(exitCode: number, stopWorkers: boolean): Promise<never>;
+	shutdown(exitCode: number): Promise<never>;
 	handleCommand(client: object, command: object): Promise<unknown>;
 	writeRosterEntry(entry: object, worker?: object): unknown;
 	cancelEphemeralWorkerScheduledJobs(worker: WorkerFixture): Promise<boolean>;
@@ -313,7 +313,7 @@ describe("daemon supervisor whole-tree eviction", () => {
 			await vi.advanceTimersByTimeAsync(5 * 60_000);
 			expect(idle.client?.request).toHaveBeenCalledOnce();
 
-			const shutdown = supervisor.shutdown(42, false).then(
+			const shutdown = supervisor.shutdown(42).then(
 				() => undefined,
 				(error: unknown) => error,
 			);

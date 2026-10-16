@@ -235,7 +235,9 @@ async function waitForDaemonGone(
 	return requireSocketCleanup && !(await canConnectToDaemon(socketPath, 250)) && hasExpectedProcessExited(true);
 }
 
-function processIdentityFromDaemonHello(hello: DaemonHello | undefined): DaemonProcessIdentity | undefined {
+function processIdentityFromDaemonHello(
+	hello: Pick<DaemonHello, "supervisorPid" | "supervisorProcessStartId"> | undefined,
+): DaemonProcessIdentity | undefined {
 	if (!hello?.supervisorPid || !Number.isInteger(hello.supervisorPid) || hello.supervisorPid <= 0) {
 		return undefined;
 	}
@@ -244,6 +246,22 @@ function processIdentityFromDaemonHello(hello: DaemonHello | undefined): DaemonP
 		pid: hello.supervisorPid,
 		...(processStartId ? { processStartId } : {}),
 	};
+}
+
+export async function stopDaemonProcessAndWait(
+	socketPath: string,
+	hello: Pick<DaemonHello, "supervisorPid" | "supervisorProcessStartId"> | undefined,
+	timeoutMs = 5000,
+): Promise<boolean> {
+	if (!hello?.supervisorProcessStartId) return false;
+	const identity = processIdentityFromDaemonHello(hello);
+	if (!identity || getProcessStartId(identity.pid) !== identity.processStartId) return false;
+	try {
+		process.kill(identity.pid, "SIGTERM");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ESRCH") return false;
+	}
+	return waitForDaemonGone(socketPath, timeoutMs, true, identity);
 }
 
 export async function shutdownConnectedDaemonAndWait(
@@ -270,7 +288,8 @@ export async function shutdownDaemonAndWait(socketPath: string, timeoutMs = 5000
 	try {
 		await client.connect(1000);
 		const hello = await client.waitForHello(2000).catch(() => undefined);
-		return shutdownConnectedDaemonAndWait(client, socketPath, timeoutMs, hello);
+		client.close();
+		return stopDaemonProcessAndWait(socketPath, hello, timeoutMs);
 	} catch {
 		client.close();
 		return waitForDaemonGone(socketPath, timeoutMs);
@@ -349,7 +368,8 @@ async function shutdownStaleDaemonIfNotBusy(socketPath: string): Promise<StaleDa
 	logDaemonLaunch(
 		`replacing stale daemon on ${socketPath} (idle): ${loadedSessionCount} loaded session(s) will reload`,
 	);
-	return (await shutdownConnectedDaemonAndWait(client, socketPath, 5000, hello)) ? "stopped" : "busy";
+	client.close();
+	return (await stopDaemonProcessAndWait(socketPath, hello)) ? "stopped" : "busy";
 }
 
 async function ensureDaemonRunning(socketPath: string, spawnCwd?: string): Promise<void> {
