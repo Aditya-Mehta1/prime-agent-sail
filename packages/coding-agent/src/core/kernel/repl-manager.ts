@@ -1,6 +1,5 @@
-// Kernel client for the REPL runtime: the kernel is a JSON-lines subprocess
-// (`python -m rlm.repl`) — requests on stdin, events on stdout, stderr kept as
-// a diagnostics tail. The protocol is documented in prime-agent-runtime/src/rlm/repl.md.
+// JSON-lines client for the local Python subprocess or remote Sail transport.
+// Protocol: prime-agent-runtime/src/rlm/repl.md.
 import type { ChildProcess } from "node:child_process";
 import {
 	chmodSync,
@@ -176,10 +175,11 @@ export class ReplKernelManager {
 		| "snapshot"
 		| "bootstrapCode"
 		| "stderrLogPath"
-		| "processLauncher"
+		| "remoteTransport"
 	>;
 	private readonly handledHostRequestIds = new Set<string>();
 	private child?: ChildProcess;
+	private remoteExit?: ReturnType<typeof createDeferred<void>>;
 	private readyDeferred?: ReturnType<typeof createDeferred<number>>;
 	private kernelStderr = "";
 	/** Serializes execute() calls — the runtime runs one request at a time. */
@@ -223,7 +223,7 @@ export class ReplKernelManager {
 	private pendingRestore = false;
 	private rebootstrapPromise?: Promise<boolean>;
 	private teardownInFlight = 0;
-	private processCleanup?: Promise<void>;
+	private transportCleanup?: Promise<void>;
 
 	constructor(options: KernelManagerOptions) {
 		this.options = {
@@ -236,7 +236,7 @@ export class ReplKernelManager {
 			snapshot: options.snapshot,
 			bootstrapCode: options.bootstrapCode,
 			stderrLogPath: options.stderrLogPath,
-			processLauncher: options.processLauncher,
+			remoteTransport: options.remoteTransport,
 		};
 	}
 
@@ -312,7 +312,7 @@ export class ReplKernelManager {
 	}
 
 	private async doStart(startOptions: KernelStartOptions): Promise<void> {
-		if (this.processCleanup) await this.processCleanup;
+		if (this.transportCleanup) await this.transportCleanup;
 		if (this.state !== "idle") return;
 		const generation = ++this.startGeneration;
 		this.state = "starting";
@@ -323,7 +323,7 @@ export class ReplKernelManager {
 
 		let python: string;
 		try {
-			python = this.options.processLauncher
+			python = this.options.remoteTransport
 				? ""
 				: (this.options.python ??
 					(await ensureKernelPython({
@@ -343,28 +343,54 @@ export class ReplKernelManager {
 			throw new Error("Kernel was disposed during startup");
 		}
 
-		const child =
-			this.options.processLauncher?.spawn() ??
-			spawnHidden(python, ["-m", "rlm.repl"], {
-				cwd: this.options.cwd,
-				// bash.py journals its process groups under this pid so the host can
-				// reap them if the runtime dies without running its shutdown hook.
-				env: {
-					...process.env,
-					...this.options.env,
-					...(process.platform === "win32" ? { PYTHONUTF8: "1" } : {}),
-					PRIME_AGENT_KERNEL_OWNER_PID: String(process.pid),
-				},
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-		this.child = child;
-		if (!this.options.processLauncher && child.pid !== undefined) recordOrphanProcessState(child.pid, true);
 		this.readyDeferred = createDeferred<number>();
 		this.startupProtocolError = undefined;
-		this.wireChild(child);
 
 		try {
-			const protocol = await this.waitForReady(child);
+			let protocol: number;
+			const transport = this.options.remoteTransport;
+			if (transport) {
+				const exited = createDeferred<void>();
+				this.remoteExit = exited;
+				const ready = this.waitForReady();
+				const startup = transport.start({
+					data: this.createProtocolReceiver(),
+					error: (error) => {
+						if (this.startStale(generation)) return;
+						this.appendKernelDiagnostic(`remote transport failed: ${error.message}`);
+						this.readyDeferred?.reject(error);
+						this.rejectActiveExecution(error);
+						this.state = "shutdown";
+						liveKernels.delete(this);
+						this.cleanupResources();
+					},
+					exit: () => {
+						exited.resolve();
+						if (this.startStale(generation)) return;
+						this.readyDeferred?.reject(new Error("Kernel exited before ready"));
+						this.state = "shutdown";
+						liveKernels.delete(this);
+						if (this.gracefulShutdownGeneration !== generation) this.cleanupResources();
+					},
+				});
+				[protocol] = await Promise.all([ready, startup]);
+			} else {
+				const child = spawnHidden(python, ["-m", "rlm.repl"], {
+					cwd: this.options.cwd,
+					// bash.py journals process groups under the host pid for orphan cleanup.
+					env: {
+						...process.env,
+						...this.options.env,
+						...(process.platform === "win32" ? { PYTHONUTF8: "1" } : {}),
+						PRIME_AGENT_KERNEL_OWNER_PID: String(process.pid),
+					},
+					stdio: ["pipe", "pipe", "pipe"],
+				});
+				this.child = child;
+				if (child.pid !== undefined) recordOrphanProcessState(child.pid, true);
+				this.wireChild(child);
+				protocol = await this.waitForReady(child);
+			}
 			if (this.startStale(generation)) throw new Error("Kernel start superseded");
 			// Ready and a corrupt frame can share one stdout chunk: ready resolved the
 			// deferred synchronously before the corruption was parsed, so the rejection
@@ -378,7 +404,7 @@ export class ReplKernelManager {
 			}
 		} catch (e) {
 			if (this.startStale(generation)) throw e; // never tear down a newer start's kernel
-			const canRetryStartup = !this.options.processLauncher && (this.state as string) !== "shutdown";
+			const canRetryStartup = !this.options.remoteTransport && (this.state as string) !== "shutdown";
 			// Only the call that performed the cleanup may resurrect to idle; a
 			// concurrent kill()/teardown owns the state otherwise.
 			if ((await this.shutdown()) && canRetryStartup) this.state = "idle";
@@ -386,6 +412,7 @@ export class ReplKernelManager {
 		}
 
 		this.state = "running";
+		this.releaseIdleTransport();
 	}
 
 	/** True when a teardown (or newer start) superseded the start that captured `generation`. */
@@ -393,15 +420,16 @@ export class ReplKernelManager {
 		return generation !== this.startGeneration;
 	}
 
-	private wireChild(child: ChildProcess): void {
+	private createProtocolReceiver(): (chunk: Buffer) => void {
+		const generation = this.startGeneration;
 		const decoder = new StringDecoder("utf8");
 		let buffered = "";
-		child.stdout?.on("data", (buf: Buffer) => {
-			if (this.child !== child) return;
+		return (buf: Buffer) => {
+			if (this.startStale(generation)) return;
 			buffered += decoder.write(buf);
 			let newline = buffered.indexOf("\n");
 			while (newline !== -1) {
-				if (this.child !== child) return;
+				if (this.startStale(generation)) return;
 				const line = buffered.slice(0, newline);
 				buffered = buffered.slice(newline + 1);
 				newline = buffered.indexOf("\n");
@@ -410,21 +438,25 @@ export class ReplKernelManager {
 				try {
 					event = JSON.parse(line);
 				} catch {
-					this.failProtocolFrame(child, `unparseable protocol line: ${line.slice(0, 200)}`);
+					this.failProtocolFrame(`unparseable protocol line: ${line.slice(0, 200)}`);
 					return;
 				}
 				if (!isRecord(event)) {
-					this.failProtocolFrame(child, `non-object protocol line: ${line.slice(0, 200)}`);
+					this.failProtocolFrame(`non-object protocol line: ${line.slice(0, 200)}`);
 					return;
 				}
 				const invalidReason = invalidProtocolFrameReason(event);
 				if (invalidReason) {
-					this.failProtocolFrame(child, `${invalidReason}: ${line.slice(0, 200)}`);
+					this.failProtocolFrame(`${invalidReason}: ${line.slice(0, 200)}`);
 					return;
 				}
 				this.handleEvent(event);
 			}
-		});
+		};
+	}
+
+	private wireChild(child: ChildProcess): void {
+		child.stdout?.on("data", this.createProtocolReceiver());
 
 		// The runtime dup2's fd 2 into its protocol pump before ready (repl.py
 		// _setup_fds), so this pipe only ever carries pre-ready bytes; the write
@@ -518,20 +550,20 @@ export class ReplKernelManager {
 		});
 	}
 
-	private failProtocolFrame(child: ChildProcess, diagnostic: string): void {
-		if (this.child !== child) return;
+	private failProtocolFrame(diagnostic: string): void {
 		this.appendKernelDiagnostic(diagnostic);
 		const error = new Error(`Kernel protocol error: ${diagnostic}`);
 		if (this.state === "starting") this.startupProtocolError = error;
 		this.readyDeferred?.reject(error);
 		this.rejectActiveExecution(error);
-		if (this.options.processLauncher) {
+		if (this.options.remoteTransport) {
 			this.state = "shutdown";
 			liveKernels.delete(this);
 			this.cleanupResources();
 			return;
 		}
-		if (this.teardownInFlight > 0 || this.state !== "running") return;
+		const child = this.child;
+		if (!child || this.teardownInFlight > 0 || this.state !== "running") return;
 
 		if (this.protocolRepairOwner) {
 			// A repair's own replacement child corrupted: discard it instead of respawn-looping.
@@ -744,7 +776,7 @@ export class ReplKernelManager {
 		}
 	}
 
-	private async waitForReady(child: ChildProcess): Promise<number> {
+	private async waitForReady(child?: ChildProcess): Promise<number> {
 		const ready = this.readyDeferred;
 		if (!ready) throw new Error("Kernel ready state is missing");
 		let timeout: ReturnType<typeof globalThis.setTimeout> | undefined;
@@ -760,15 +792,15 @@ export class ReplKernelManager {
 					// The final stderr chunks can still be in flight at 'exit'; wait for
 					// the drained pipe so the tail includes the kernel's last words (the
 					// ready timeout stays armed, bounding the wait).
-					const stderr = child.stderr;
+					const stderr = child?.stderr;
 					if (!stderr || stderr.closed) finish();
 					else stderr.once("close", finish);
 				};
-				if (child.exitCode !== null || child.signalCode !== null) {
+				if (child && (child.exitCode !== null || child.signalCode !== null)) {
 					onExit();
 					return;
 				}
-				child.once("exit", onExit);
+				child?.once("exit", onExit);
 				timeout = globalThis.setTimeout(() => {
 					const tail = this.kernelStderr.slice(-1024);
 					reject(
@@ -781,18 +813,20 @@ export class ReplKernelManager {
 			});
 		} finally {
 			if (timeout) globalThis.clearTimeout(timeout);
-			if (onExit) child.removeListener("exit", onExit);
+			if (onExit) child?.removeListener("exit", onExit);
 		}
 	}
 
 	/** Write one JSON-lines request frame; resolves when the OS accepted the bytes. */
 	private writeLine(request: Record<string, unknown>): Promise<void> {
+		const line = `${JSON.stringify(request)}\n`;
+		if (this.options.remoteTransport && this.remoteExit) return this.options.remoteTransport.write(line);
 		const stdin = this.child?.stdin;
 		if (!stdin || stdin.destroyed) {
 			return Promise.reject(new Error("Kernel stdin is not connected"));
 		}
 		return new Promise<void>((resolve, reject) => {
-			stdin.write(`${JSON.stringify(request)}\n`, (error) => {
+			stdin.write(line, (error) => {
 				if (error) reject(error);
 				else resolve();
 			});
@@ -818,6 +852,7 @@ export class ReplKernelManager {
 					}
 				} else if (this.backgroundBashHandles.get(activity.id) === activity.pid) {
 					this.backgroundBashHandles.delete(activity.id);
+					this.releaseIdleTransport();
 				}
 			}
 			return;
@@ -1169,6 +1204,7 @@ export class ReplKernelManager {
 		}
 		if (didClearActive) {
 			this.notifyActiveExecutionIdle();
+			this.releaseIdleTransport();
 		}
 	}
 
@@ -1308,7 +1344,19 @@ export class ReplKernelManager {
 		this.inFlightHostRequests.add(task);
 		void task.finally(() => {
 			this.inFlightHostRequests.delete(task);
+			this.releaseIdleTransport();
 		});
+	}
+
+	private releaseIdleTransport(): void {
+		if (
+			this.state === "running" &&
+			!this.activeExecution &&
+			this.inFlightHostRequests.size === 0 &&
+			this.backgroundBashHandles.size === 0
+		) {
+			this.options.remoteTransport?.release();
+		}
 	}
 
 	private async handleHostRequest(data: unknown): Promise<Record<string, unknown>> {
@@ -1350,43 +1398,40 @@ export class ReplKernelManager {
 		this.child = undefined;
 		this.readyDeferred = undefined;
 		if (child) {
-			const releaseChild = () => {
-				child.stdin?.destroy();
-				child.stdout?.destroy();
-				// An exited child keeps its stderr: the post-exit drain owns it, and
-				// destroying here would drop its buffered last words. A still-alive
-				// child may ignore the kill signal and never emit 'exit', so that
-				// drain would never run — destroy now to bound the pipe's lifetime.
-				if (child.exitCode === null && child.signalCode === null) {
-					child.stderr?.destroy();
-				}
-				const pid = child.pid;
-				let signaled = false;
-				try {
-					signaled = child.kill(killSignal);
-				} catch {
-					// The kernel has already exited.
-				}
-				// Inactive only when the signal proved the pid still named our un-reaped child.
-				if (!this.options.processLauncher && pid !== undefined && signaled) recordOrphanProcessState(pid, false);
-				// A killed/crashed kernel cannot run its own shutdown hook, so the host
-				// reaps the bash() process groups it journaled under this kernel pid.
-				if (!this.options.processLauncher && pid !== undefined) reapKernelOrphanProcesses(pid);
-			};
-			if (this.options.processLauncher) {
-				const cleanup = this.options.processLauncher.stop(child).finally(releaseChild);
-				this.processCleanup = cleanup;
-				void cleanup.catch((error: unknown) =>
-					this.appendKernelDiagnostic(`remote cleanup failed: ${errorMessage(error)}`),
-				);
-			} else {
-				releaseChild();
+			child.stdin?.destroy();
+			child.stdout?.destroy();
+			// An exited child keeps its stderr: the post-exit drain owns it, and
+			// destroying here would drop its buffered last words. A still-alive
+			// child may ignore the kill signal and never emit 'exit', so that
+			// drain would never run — destroy now to bound the pipe's lifetime.
+			if (child.exitCode === null && child.signalCode === null) {
+				child.stderr?.destroy();
 			}
+			const pid = child.pid;
+			let signaled = false;
+			try {
+				signaled = child.kill(killSignal);
+			} catch {
+				// The kernel has already exited.
+			}
+			// Inactive only when the signal proved the pid still named our un-reaped child.
+			if (pid !== undefined && signaled) recordOrphanProcessState(pid, false);
+			// A killed/crashed kernel cannot run its own shutdown hook, so the host
+			// reaps the bash() process groups it journaled under this kernel pid.
+			if (pid !== undefined) reapKernelOrphanProcesses(pid);
+		}
+		if (this.options.remoteTransport && this.remoteExit) {
+			this.remoteExit = undefined;
+			this.transportCleanup = this.options.remoteTransport.stop();
+			void this.transportCleanup.catch((error: unknown) =>
+				this.appendKernelDiagnostic(`remote cleanup failed: ${errorMessage(error)}`),
+			);
 		}
 		this.startPromise = undefined;
 	}
 
 	private async waitForKernelExit(): Promise<void> {
+		if (this.remoteExit) return this.remoteExit.promise;
 		const child = this.child;
 		if (!child) return;
 		if (child.exitCode !== null || child.signalCode !== null) return;
@@ -1418,7 +1463,7 @@ export class ReplKernelManager {
 		const inFlightShutdown = this.gracefulShutdownPromise;
 		if (inFlightShutdown) {
 			await inFlightShutdown;
-			if (this.processCleanup) await this.processCleanup;
+			if (this.transportCleanup) await this.transportCleanup;
 			return false;
 		}
 
@@ -1428,7 +1473,7 @@ export class ReplKernelManager {
 		this.gracefulShutdownPromise = operation;
 		try {
 			const result = await operation;
-			if (this.processCleanup) await this.processCleanup;
+			if (this.transportCleanup) await this.transportCleanup;
 			return result;
 		} finally {
 			this.teardownInFlight--;
@@ -1468,8 +1513,7 @@ export class ReplKernelManager {
 			if (
 				protocolShutdownAvailable &&
 				!this.startStale(generation) &&
-				this.child?.stdin &&
-				!this.child.stdin.destroyed
+				(this.remoteExit || (this.child?.stdin && !this.child.stdin.destroyed))
 			) {
 				const requestId = uuid();
 				doneWaiterId = requestId;
@@ -1538,7 +1582,7 @@ export class ReplKernelManager {
 		this.state = "shutdown";
 		liveKernels.delete(this);
 		this.cleanupResources("SIGKILL");
-		if (this.processCleanup) await this.processCleanup;
+		if (this.transportCleanup) await this.transportCleanup;
 	}
 
 	/**

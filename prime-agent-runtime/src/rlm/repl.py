@@ -1,4 +1,4 @@
-"""Minimal CPython REPL runtime speaking newline-delimited JSON over stdio.
+"""Minimal CPython REPL runtime speaking newline-delimited JSON.
 
 Entry point: ``python -m rlm.repl``. The protocol is documented in repl.md
 next to this file. Cells execute with top-level await in one persistent
@@ -18,6 +18,7 @@ import linecache
 import os
 import platform
 import signal
+import socket
 import sys
 import threading
 import time
@@ -25,7 +26,7 @@ import traceback
 import types
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, BinaryIO
 
 from .bash import _kill_live_handles
 
@@ -41,6 +42,9 @@ _RESTORE_SKIP = {"In", "Out", "get_ipython"}
 
 _protocol_fd: int = -1
 _write_lock = threading.Lock()
+_socket_listener: socket.socket | None = None
+_socket_connection: socket.socket | None = None
+_connection_ready = threading.Condition()
 _loop: asyncio.AbstractEventLoop | None = None
 _serve_task: asyncio.Task[Any] | None = None
 
@@ -79,10 +83,17 @@ def _send(event: dict[str, Any]) -> None:
     """Write one protocol frame; the locked single write keeps frames atomic."""
     data = (json.dumps(event, separators=(",", ":")) + "\n").encode()
     with _write_lock:
-        view = memoryview(data)
         try:
-            while view:
-                view = view[os.write(_protocol_fd, view) :]
+            if _socket_listener is not None:
+                with _connection_ready:
+                    _connection_ready.wait_for(lambda: _socket_connection is not None)
+                    connection = _socket_connection
+                assert connection is not None
+                connection.sendall(data)
+            else:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(_protocol_fd, view) :]
         except OSError:
             pass
 
@@ -105,7 +116,7 @@ def emit(data: dict[str, Any]) -> None:
 
 def is_active() -> bool:
     """True when this process serves the repl protocol (not merely imported)."""
-    return _protocol_fd >= 0
+    return _protocol_fd >= 0 or _socket_listener is not None
 
 
 def current_cell_completion_context() -> tuple[asyncio.Event, asyncio.Task[Any] | None] | None:
@@ -1058,23 +1069,45 @@ def _handle_request_line(raw: bytes, queue: asyncio.Queue[dict[str, Any]]) -> No
     _loop.call_soon_threadsafe(queue.put_nowait, req)
 
 
+def _read_request_stream(stream: BinaryIO, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    for raw in stream:
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            # Hostile input must fail one request, not the reader thread.
+            _handle_request_line(raw, queue)
+        except BaseException as err:  # noqa: BLE001
+            _protocol_error(f"{type(err).__name__}: {_safe_str(err)}")
+
+
 def _read_requests(stdin_fd: int, queue: asyncio.Queue[dict[str, Any]]) -> None:
     assert _loop is not None
     with os.fdopen(stdin_fd, "rb") as stream:
-        for raw in stream:
-            raw = raw.strip()
-            if not raw:
-                continue
-            try:
-                # The whole per-line handling sits inside the backstop: hostile
-                # input (RecursionError from pathological nesting, unhashable
-                # field types, ...) must never kill the reader thread.
-                _handle_request_line(raw, queue)
-            except BaseException as err:  # noqa: BLE001
-                _protocol_error(f"{type(err).__name__}: {_safe_str(err)}")
+        _read_request_stream(stream, queue)
     # Host closed stdin: shut the runtime down.
     _loop.call_soon_threadsafe(_fail_pending_host_requests)
     _loop.call_soon_threadsafe(queue.put_nowait, {"type": "shutdown"})
+
+
+def _read_socket_requests(queue: asyncio.Queue[dict[str, Any]]) -> None:
+    global _socket_connection
+    assert _socket_listener is not None and _socket_connection is not None
+    connection = _socket_connection
+    while True:
+        with connection:
+            try:
+                with connection.makefile("rb") as stream:
+                    _read_request_stream(stream, queue)
+            except OSError:
+                pass
+            finally:
+                with _connection_ready:
+                    _socket_connection = None
+        connection, _ = _socket_listener.accept()
+        with _connection_ready:
+            _socket_connection = connection
+            _connection_ready.notify_all()
 
 
 def _resolve_owner_pid() -> int:
@@ -1151,8 +1184,9 @@ _pump_err: _Pump
 def _setup_fds() -> int:
     """Reserve stdout for the protocol; route fds 1/2 through captured pipes."""
     global _protocol_fd, _pump_out, _pump_err
-    _protocol_fd = os.dup(1)
-    os.set_inheritable(_protocol_fd, False)
+    if _socket_listener is None:
+        _protocol_fd = os.dup(1)
+        os.set_inheritable(_protocol_fd, False)
     out_r, out_w = os.pipe()
     err_r, err_w = os.pipe()
     os.dup2(out_w, 1)
@@ -1172,7 +1206,11 @@ def _setup_fds() -> int:
 
 
 def main() -> None:
-    global _loop, _serve_task
+    global _loop, _serve_task, _socket_listener, _socket_connection
+    if "--socket" in sys.argv[1:]:
+        _socket_listener = socket.create_server(("127.0.0.1", 0), backlog=1)
+        print(json.dumps({"port": _socket_listener.getsockname()[1]}), flush=True)
+        _socket_connection, _ = _socket_listener.accept()
     stdin_fd = _setup_fds()
     _start_owner_watchdog()
 
@@ -1196,7 +1234,11 @@ def main() -> None:
     _loop = asyncio.new_event_loop()
     asyncio.set_event_loop(_loop)
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    threading.Thread(target=_read_requests, args=(stdin_fd, queue), daemon=True).start()
+    if _socket_listener is None:
+        threading.Thread(target=_read_requests, args=(stdin_fd, queue), daemon=True).start()
+    else:
+        os.close(stdin_fd)
+        threading.Thread(target=_read_socket_requests, args=(queue,), daemon=True).start()
 
     _serve_task = _loop.create_task(_serve(queue, user_module.__dict__))
     # _sigint_handler has no task to target before serving starts, so installing
