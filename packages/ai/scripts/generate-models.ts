@@ -1486,6 +1486,7 @@ async function fetchSailModels(): Promise<Model<"openai-responses">[]> {
 		compat: { sendSessionIdHeader: false, supportsLongCacheRetention: false, supportsServiceTier: false },
 		baseUrl: "https://api.sailresearch.com/v1",
 		reasoning: true,
+		thinkingLevelMap: { xhigh: "xhigh", max: "max" },
 		input: ["text"] as ["text"],
 		contextWindow: 1000000,
 		maxTokens: 8192,
@@ -1494,29 +1495,19 @@ async function fetchSailModels(): Promise<Model<"openai-responses">[]> {
 	const models: Model<"openai-responses">[] = [
 		{
 			...base,
-			id: "zai-org/GLM-5.3",
-			name: "GLM 5.3 (ASAP)",
+			id: "deepseek-ai/DeepSeek-V4.1-Flash",
+			name: "DeepSeek V4.1 Flash (ASAP)",
 			provider: "sail-asap",
 			headers: { "X-Sail-Completion-Window": "asap" },
-			cost: { input: 0.98, output: 3.08, cacheRead: 0.18, cacheWrite: 0 },
-			// Sail rejects reasoning=none; low is GLM-5.3's lowest native tier.
-			thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
+			cost: { input: 0.09, output: 0.30, cacheRead: 0.006, cacheWrite: 0 },
 		},
 		{
 			...base,
-			id: "zai-org/GLM-5.3-Flash",
-			name: "GLM 5.3 Flash (ASAP)",
-			provider: "sail-asap",
-			headers: { "X-Sail-Completion-Window": "asap" },
-			cost: { input: 0.11, output: 0.35, cacheRead: 0.02, cacheWrite: 0 },
-		},
-		{
-			...base,
-			id: "zai-org/GLM-5.3-Flash",
-			name: "GLM 5.3 Flash (Balanced)",
+			id: "deepseek-ai/DeepSeek-V4.1-Flash",
+			name: "DeepSeek V4.1 Flash (Balanced)",
 			provider: "sail",
 			headers: { "X-Sail-Completion-Window": "balanced" },
-			cost: { input: 0.08, output: 0.28, cacheRead: 0.02, cacheWrite: 0 },
+			cost: { input: 0.07, output: 0.22, cacheRead: 0.005, cacheWrite: 0 },
 		},
 	];
 	if (process.env.SAIL_API_KEY) {

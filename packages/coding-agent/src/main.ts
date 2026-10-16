@@ -1281,7 +1281,8 @@ export async function main(args: string[], options?: MainOptions) {
 		}
 	}
 	if (!startupSettingsManager.getDefaultProvider() && !startupSettingsManager.getDefaultModel()) {
-		startupSettingsManager.setDefaultModelAndProvider("sail-asap", "zai-org/GLM-5.3-Flash");
+		startupSettingsManager.setDefaultModelAndProvider("sail-asap", "deepseek-ai/DeepSeek-V4.1-Flash");
+		startupSettingsManager.setDefaultThinkingLevel("max");
 		await startupSettingsManager.flush();
 	}
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
