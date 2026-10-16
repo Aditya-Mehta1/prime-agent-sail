@@ -255,6 +255,7 @@ describe("Sail kernel relay", () => {
 				PRIME_AGENT_KERNEL_OWNER_PID: "123",
 				RLM_SESSION_DIR: "/host/session",
 				GH_TOKEN: "explicit-guest-token",
+				GITHUB_TOKEN: "explicit-github-token",
 			},
 			hostHandlers: {
 				"rlm.run": async (payload) => {
@@ -280,8 +281,10 @@ describe("Sail kernel relay", () => {
 			expect(f.commands[1]).toMatchObject({
 				command: ["/bin/sh", "-lc", expect.stringContaining("rlm.repl")],
 				open_stdin: true,
-				env: { GH_TOKEN: "explicit-guest-token", RLM_SESSION_DIR: "/state/session" },
+				env: { GH_HOST: "github.com", RLM_SESSION_DIR: "/state/session" },
 			});
+			expect(f.commands[1].env).not.toHaveProperty("GH_TOKEN");
+			expect(f.commands[1].env).not.toHaveProperty("GITHUB_TOKEN");
 			expect(f.commands[1].env).not.toHaveProperty("SAIL_API_KEY");
 			expect(f.commands[1].env).not.toHaveProperty("PRIME_AGENT_KERNEL_OWNER_PID");
 			expect(f.frames).toEqual(
