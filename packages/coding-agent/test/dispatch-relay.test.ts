@@ -77,7 +77,7 @@ async function fixture() {
 			response.once("close", disconnected);
 			return;
 		}
-		if (url.pathname.endsWith("/sleep") || url.pathname.endsWith("/terminate")) {
+		if (url.pathname.endsWith("/terminate")) {
 			boxActions.push(url.pathname);
 			response.writeHead(200, { "Content-Type": "application/json" }).end("{}");
 			return;
