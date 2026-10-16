@@ -5,9 +5,10 @@ import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile }
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { NotFoundError } from "@sailresearch/sdk";
 import { getBundledSkillsDir, getPackageDir } from "../../config.js";
 import { DEFAULT_RLM_EXTRA_UV_ARGS } from "../kernel/bootstrap.js";
-import { SailClient, SailHttpError } from "./sail-client.js";
+import { SailClient } from "./sail-client.js";
 import type { DispatchBinding } from "./types.js";
 
 const executeFile = promisify(execFile);
@@ -133,7 +134,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		await mkdir(join(staging, "inputs"));
 		const inputs = await captureInputs(options.inputs ?? {}, options.sourceCwd, join(staging, "inputs"));
 		const branch = `dispatch/${randomUUID()}`;
-		const app = await client.findApp();
+		const app = await (await client.sdk).findApp("prime-agent-dispatch", true);
 		options.signal?.throwIfAborted();
 		// Do not abort the create response: retain its ID and terminate a late allocation.
 		const box = await client.createBox(app.id, `prime-${basename(options.sessionDir)}`);
@@ -141,7 +142,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 			version: 2,
 			ownsBox: true,
 			appId: app.id,
-			boxId: box.sailbox_id,
+			boxId: box.sailboxId,
 			guestRepoDir: GUEST_REPO,
 			guestCwd: `${GUEST_REPO}${capture.cwdRelative && capture.cwdRelative !== "." ? `/${capture.cwdRelative.split(sep).join("/")}` : ""}`,
 			guestStateDir: `${GUEST_STATE}/${basename(options.sessionDir)}`,
@@ -156,8 +157,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		await mkdir(options.sessionDir, { recursive: true });
 		await writeFile(join(options.sessionDir, "dispatch.json"), JSON.stringify(binding, null, 2));
 		options.signal?.throwIfAborted();
-		if (box.status !== "running")
-			throw new Error(`Sailbox setup failed (${box.status}): ${box.error_message ?? box.sailbox_id}`);
+		if (box.status !== "running") throw new Error(`Sailbox setup failed (${box.status}): ${box.sailboxId}`);
 		const archive = join(staging, "payload.tar.gz");
 		await executeFile(
 			"tar",
@@ -166,7 +166,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 				env: { ...process.env, COPYFILE_DISABLE: "1" },
 			},
 		);
-		await client.writeFile(box.sailbox_id, "/tmp/prime-dispatch.tar.gz", await readFile(archive), options.signal);
+		await client.writeFile(box.sailboxId, "/tmp/prime-dispatch.tar.gz", await readFile(archive), options.signal);
 		const skillPackages = (await readdir(join(staging, "skills")))
 			.filter((name) => existsSync(join(staging, "skills", name, "pyproject.toml")))
 			.map((name) => `${GUEST_INSTALL}/skills/${name}`);
@@ -191,7 +191,7 @@ uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTAL
 rm -rf ${GUEST_INSTALL}/project /tmp/prime-dispatch.tar.gz
 git -C ${GUEST_REPO} rev-parse HEAD
 `;
-		const result = await client.run(box.sailbox_id, { command: bootstrap, timeout: 600 }, options.signal);
+		const result = await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
 		binding.baselineCommit = result.stdout.trim().split("\n").at(-1) ?? "";
 		if (!/^[a-f0-9]{40,64}$/.test(binding.baselineCommit))
 			throw new Error("Sailbox bootstrap did not produce a baseline commit");
@@ -228,21 +228,8 @@ export function loadDispatchBinding(sessionDir: string): DispatchBinding | undef
 export async function terminateDispatchWorkspace(binding: DispatchBinding): Promise<void> {
 	if (!binding.ownsBox) return;
 	try {
-		await new SailClient().terminateBox(binding.boxId);
+		await (await new SailClient().sdk).terminateSailbox(binding.boxId);
 	} catch (error) {
-		if (!(error instanceof SailHttpError && error.status === 404)) throw error;
-	}
-}
-
-export async function sleepDispatchWorkspace(binding: DispatchBinding): Promise<void> {
-	if (!binding.ownsBox) return;
-	const client = new SailClient();
-	try {
-		await client.sleepBox(binding.boxId);
-	} catch (error) {
-		if (error instanceof SailHttpError && error.status === 404) return;
-		const state = await client.getBox(binding.boxId);
-		if (["terminated", "terminating", "sleeping"].includes(state.status)) return;
-		throw error;
+		if (!(error instanceof NotFoundError)) throw error;
 	}
 }

@@ -93,7 +93,6 @@ import {
 	inheritDispatchWorkspace,
 	loadDispatchBinding,
 	prepareDispatchWorkspace,
-	sleepDispatchWorkspace,
 	terminateDispatchWorkspace,
 } from "../../core/dispatch/workspace.js";
 import { ORPHAN_PROCESS_JOURNAL_ENV } from "../../core/orphan-process-journal.js";
@@ -3194,11 +3193,8 @@ export class AgentDaemon {
 			try {
 				await this.closeSession(state, "shutdown", true, false);
 				const binding = state.runtime.session.dispatchBinding;
-				if (binding && binding.ownsBox) {
-					if (hasDispatchKernels(binding.boxId))
-						throw new Error(`Sailbox ${binding.boxId} still has an unconfirmed kernel; refusing to sleep`);
-					await sleepDispatchWorkspace(binding);
-				}
+				if (binding?.ownsBox && hasDispatchKernels(binding.boxId))
+					throw new Error(`Sailbox ${binding.boxId} still has an unconfirmed kernel`);
 			} catch (error) {
 				if (
 					this.sessions.get(state.activeSessionId) === state &&

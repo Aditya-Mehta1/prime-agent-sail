@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import type { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import type { Client } from "@sailresearch/sdk";
 import { SailClient } from "./sail-client.js";
 
 export interface SailRelayConfig {
@@ -10,128 +11,118 @@ export interface SailRelayConfig {
 	env: Record<string, string>;
 }
 
-async function writeBytes(stream: Writable, bytes: Uint8Array): Promise<void> {
-	if (!stream.write(bytes)) await once(stream, "drain");
+async function forwardOutput(chunks: AsyncIterable<Buffer>, output: Writable): Promise<void> {
+	for await (const chunk of chunks) {
+		if (!output.write(chunk)) await once(output, "drain");
+	}
 }
 
-/** Forward bytes once. Reconnecting or replaying stdin could execute a cell twice. */
+/** One attachment: missing REPL output must fail instead of silently replaying a cell. */
 export async function runSailRelay(
-	client: Pick<SailClient, "exec" | "writeStdin">,
+	client: Promise<Client>,
 	config: SailRelayConfig,
 	input: Readable,
 	output: Writable,
 	diagnostics: Writable,
+	signal: AbortSignal,
 	onStarted: (id: string) => void,
 	onExit: () => void,
 ): Promise<number> {
-	const controller = new AbortController();
-	let inputTask: Promise<void> | undefined;
-	let inputError: unknown;
-	let started = false;
-	const sequences: Partial<Record<"stdout" | "stderr", number>> = {};
+	const proc = await (await client).exec(config.boxId, config.command, {
+		cwd: config.cwd,
+		env: config.env,
+		openStdin: true,
+		outputMode: "pipe",
+	});
+	// Reading the ID disables SDK stream reclamation after an interruption.
+	onStarted(proc.execRequestId);
+	const outputs = Promise.all([
+		forwardOutput(proc.stdout.raw(), output),
+		forwardOutput(proc.stderr.raw(), diagnostics),
+	]);
+	const stdin = (async () => {
+		for await (const chunk of input) await proc.writeStdin(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+		await proc.closeStdin();
+	})();
+	let onAbort!: () => void;
+	const stopped = new Promise<never>((_, reject) => {
+		onAbort = () => reject(new Error("Sail relay stopped"));
+		signal.addEventListener("abort", onAbort, { once: true });
+		if (signal.aborted) onAbort();
+	});
 	try {
-		for await (const event of client.exec(
-			config.boxId,
-			{
-				command: config.command,
-				cwd: config.cwd,
-				env: config.env,
-				open_stdin: true,
-			},
-			controller.signal,
-		)) {
-			if (event.type === "started") {
-				if (started) throw new Error("Sail relay received duplicate started event");
-				started = true;
-				onStarted(event.exec_request_id);
-				inputTask = (async () => {
-					let offset = 0;
-					for await (const chunk of input) {
-						const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-						const accepted = await client.writeStdin(config.boxId, event.exec_request_id, bytes, offset);
-						if (accepted !== offset + bytes.length)
-							throw new Error("Sail stdin acknowledgment mismatch; cell delivery is uncertain");
-						offset = accepted;
-					}
-					await client.writeStdin(config.boxId, event.exec_request_id, new Uint8Array(), offset, true);
-				})();
-				void inputTask.catch((error: unknown) => {
-					inputError = error;
-					controller.abort();
-				});
-			} else if (event.type === "stdout" || event.type === "stderr") {
-				if (!started) throw new Error("Sail output arrived before its exec ID");
-				if (event.seq !== undefined) {
-					const previous = sequences[event.type];
-					if (previous !== undefined && event.seq !== previous + 1)
-						throw new Error("Sail output sequence changed; refusing to replay or omit kernel bytes");
-					sequences[event.type] = event.seq;
-				}
-				await writeBytes(event.type === "stdout" ? output : diagnostics, Buffer.from(event.data, "base64"));
-			} else if (event.type === "exit") {
-				onExit();
-				return event.return_code ?? 1;
-			} else if (event.type === "error") {
-				throw new Error("Sail exec transport failed; the kernel will not be restarted automatically");
-			}
-		}
-		throw new Error("Sail exec stream ended without an exit event; cell delivery is uncertain");
+		await Promise.race([outputs, stdin.then(() => outputs), stopped]);
+		const code = proc.poll();
+		if (code === null) throw new Error("Sail exec stream ended before exit; cell delivery is uncertain");
+		onExit();
+		return code;
 	} catch (error) {
-		throw inputError ?? error;
+		let deadline: ReturnType<typeof setTimeout> | undefined;
+		try {
+			await Promise.race([
+				(async () => {
+					await proc.cancel({ force: true });
+					await proc.wait();
+				})(),
+				new Promise<never>((_, reject) => {
+					deadline = setTimeout(() => reject(new Error("SDK cleanup timed out")), 30_000);
+				}),
+			]);
+			onExit();
+		} catch (cleanupError) {
+			throw new Error(
+				`Sail kernel cleanup failed: ${String(cleanupError)}; manually inspect Sailbox ${config.boxId}`,
+			);
+		} finally {
+			clearTimeout(deadline);
+		}
+		if (signal.aborted) return 0;
+		throw error;
 	} finally {
-		controller.abort();
+		signal.removeEventListener("abort", onAbort);
+		proc.close();
 		input.destroy();
-		await inputTask?.catch(() => undefined);
+		await Promise.allSettled([stdin, outputs]);
 	}
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
 	process.once("message", (config: SailRelayConfig) => {
-		const client = new SailClient();
-		let execId: string | undefined;
-		let exited = false;
-		let cancelling = false;
-		const parentDisconnected = () => {
-			if (!execId || exited || cancelling) return;
-			cancelling = true;
-			void client.cancelExec(config.boxId, execId, true).then(
-				() => process.exit(0),
-				(error: unknown) => {
-					process.stderr.write(
-						`Sail kernel cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`,
-					);
-					process.exit(1);
-				},
-			);
-		};
-		process.once("disconnect", parentDisconnected);
+		const controller = new AbortController();
+		const stop = () => controller.abort();
+		process.on("message", (message: unknown) => {
+			if (message && typeof message === "object" && "type" in message && message.type === "stop") stop();
+		});
+		process.once("disconnect", stop);
+		if (!process.connected) stop();
 		void runSailRelay(
-			client,
+			new SailClient().sdk,
 			config,
 			process.stdin,
 			process.stdout,
 			process.stderr,
-			(id) => {
-				execId = id;
-				if (process.connected) process.send?.({ type: "started", execId: id });
-				else parentDisconnected();
+			controller.signal,
+			(execId) => {
+				if (process.connected) process.send?.({ type: "started", execId });
 			},
 			() => {
-				exited = true;
 				if (process.connected) process.send?.({ type: "remote-exit" });
 			},
-		).then(
-			(code) => {
-				process.exitCode = code;
-				process.removeListener("disconnect", parentDisconnected);
+		)
+			.then(
+				(code) => {
+					process.exitCode = code;
+				},
+				(error: unknown) => {
+					const message = error instanceof Error ? error.message : String(error);
+					process.stderr.write(`Sail kernel relay: ${message}\n`);
+					if (process.connected) process.send?.({ type: "cleanup-error", error: message });
+					process.exitCode = 1;
+				},
+			)
+			.finally(() => {
+				process.removeListener("disconnect", stop);
 				if (process.connected) process.disconnect();
-			},
-			(error: unknown) => {
-				process.stderr.write(`Sail kernel relay: ${error instanceof Error ? error.message : String(error)}\n`);
-				process.exitCode = 1;
-				process.removeListener("disconnect", parentDisconnected);
-				if (process.connected) process.disconnect();
-			},
-		);
+			});
 	});
 }
