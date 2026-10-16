@@ -4,7 +4,7 @@
 	"description": "Coding agent CLI with a persistent Python REPL kernel and session management",
 	"type": "module",
 	"piConfig": {
-		"name": "prime-agent",
+		"name": "prime-agent-sail",
 		"configDir": ".prime/agent"
 	},
 	"bin": {

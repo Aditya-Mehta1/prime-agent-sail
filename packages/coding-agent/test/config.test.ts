@@ -4,18 +4,22 @@ import { delimiter, join } from "path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
 	detectInstallMethod,
+	ENV_AGENT_DIR,
 	ENV_LEGACY_SESSION_DIR,
 	ENV_SESSION_DIR,
+	getAgentDir,
 	getDaemonLogPath,
 	getSelfUpdateCommand,
 	getSelfUpdateUnavailableInstruction,
 	getSessionsDir,
 } from "../src/config.js";
+import { SettingsManager } from "../src/core/settings-manager.js";
 
 const execPathDescriptor = Object.getOwnPropertyDescriptor(process, "execPath");
 const originalEnv = {
 	PATH: process.env.PATH,
 	PI_PACKAGE_DIR: process.env.PI_PACKAGE_DIR,
+	[ENV_AGENT_DIR]: process.env[ENV_AGENT_DIR],
 	[ENV_SESSION_DIR]: process.env[ENV_SESSION_DIR],
 	[ENV_LEGACY_SESSION_DIR]: process.env[ENV_LEGACY_SESSION_DIR],
 };
@@ -266,8 +270,21 @@ describe("detectInstallMethod", () => {
 });
 
 describe("session paths", () => {
+	test("isolates user state while loading existing Prime project settings", () => {
+		delete process.env[ENV_AGENT_DIR];
+		delete process.env[ENV_SESSION_DIR];
+		delete process.env[ENV_LEGACY_SESSION_DIR];
+		expect(getAgentDir()).toBe(join(homedir(), ".prime-agent-sail"));
+		tempDir = mkdtempSync(join(tmpdir(), "sail-project-config-"));
+		mkdirSync(join(tempDir, ".prime", "agent"), { recursive: true });
+		writeFileSync(join(tempDir, ".prime", "agent", "settings.json"), '{"defaultProvider":"anthropic"}');
+		process.env[ENV_AGENT_DIR] = join(tempDir, "user-state");
+		expect(SettingsManager.create(tempDir).getDefaultProvider()).toBe("anthropic");
+		expect(getSessionsDir()).toBe(join(tempDir, "user-state", "sessions"));
+	});
+
 	test("prefers the app-prefixed session dir env var over the legacy one and expands tilde", () => {
-		expect(ENV_SESSION_DIR).toBe("PRIME_AGENT_SESSION_DIR");
+		expect(ENV_SESSION_DIR).toBe("PRIME_AGENT_SAIL_SESSION_DIR");
 
 		const sessionRoot = join(tmpdir(), `pi-session-root-${Date.now()}`);
 		process.env[ENV_SESSION_DIR] = sessionRoot;

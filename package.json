@@ -1,7 +1,10 @@
 {
-	"name": "prime-agent",
+	"name": "prime-agent-sail",
 	"private": true,
 	"type": "module",
+	"bin": {
+		"prime-agent-sail": "prime-agent-sail"
+	},
 	"workspaces": [
 		"packages/*",
 		"packages/coding-agent/examples/extensions/with-deps",

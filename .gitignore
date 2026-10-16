@@ -12,7 +12,6 @@ packages/*/dist-firefox/
 # Environment
 .env
 .prime/
-.agent-projects/
 
 # Editor files
 .vscode/

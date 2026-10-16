@@ -57,12 +57,11 @@ flowchart LR
 ## Try it
 
 ```bash
-export SAIL_API_KEY=...
-./install-local.sh
-export PATH="$HOME/.local/bin:$PATH"
+npm ci
+npm link
 
 cd /path/to/project
-agent-projects
+prime-agent-sail
 ```
 
-Needs macOS or Linux and Node 22.8+.
+Needs macOS or Linux, Node 22.8+, and Sail API key
