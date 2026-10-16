@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -158,21 +158,13 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		await writeFile(join(options.sessionDir, "dispatch.json"), JSON.stringify(binding, null, 2));
 		options.signal?.throwIfAborted();
 		if (box.status !== "running") throw new Error(`Sailbox setup failed (${box.status}): ${box.sailboxId}`);
-		const archive = join(staging, "payload.tar.gz");
-		await executeFile(
-			"tar",
-			["--no-xattrs", "-czf", archive, "-C", staging, "project", "runtime", "skills", "inputs"],
-			{
-				env: { ...process.env, COPYFILE_DISABLE: "1" },
-			},
-		);
-		await client.writeFile(box.sailboxId, "/tmp/prime-dispatch.tar.gz", await readFile(archive), options.signal);
+		await (await client.sdk).uploadDir(box.sailboxId, { localDir: staging, guestDir: GUEST_INSTALL });
+		options.signal?.throwIfAborted();
 		const skillPackages = (await readdir(join(staging, "skills")))
 			.filter((name) => existsSync(join(staging, "skills", name, "pyproject.toml")))
 			.map((name) => `${GUEST_INSTALL}/skills/${name}`);
 		const bootstrap = `set -eu
-mkdir -p ${GUEST_INSTALL} ${GUEST_STATE} /workspace
-tar --no-same-owner -xzf /tmp/prime-dispatch.tar.gz -C ${GUEST_INSTALL}
+mkdir -p ${GUEST_STATE} /workspace
 mv ${GUEST_INSTALL}/inputs /workspace/inputs
 mkdir -p ${GUEST_REPO}
 git -C ${GUEST_REPO} init -q
@@ -188,7 +180,7 @@ ${capture.origin ? `git -C ${GUEST_REPO} remote add origin ${shellQuote(capture.
 git -C ${GUEST_REPO} config credential.https://github.com.helper '!gh auth git-credential'
 uv venv --python 3.11 ${GUEST_INSTALL}/venv
 uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
-rm -rf ${GUEST_INSTALL}/project /tmp/prime-dispatch.tar.gz
+rm -rf ${GUEST_INSTALL}/project
 git -C ${GUEST_REPO} rev-parse HEAD
 `;
 		const result = await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
