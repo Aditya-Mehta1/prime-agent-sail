@@ -1,11 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Client, EgressPolicy, type RunOptions, resolveConfig, Sailbox } from "@sailresearch/sdk";
-
 import { AuthStorage } from "../auth-storage.js";
 
 const executeFile = promisify(execFile);
-// shortcut: shared credentials assume one GitHub identity; scope per user before multi-user use.
 const GITHUB_AUTH = "prime-dispatch-github";
 
 export class SailClient {
