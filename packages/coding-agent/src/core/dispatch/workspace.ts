@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { NotFoundError } from "@sailresearch/sdk";
 import { getBundledSkillsDir, getPackageDir } from "../../config.js";
+import { parseGitUrl } from "../../utils/git.js";
 import { DEFAULT_RLM_EXTRA_UV_ARGS } from "../kernel/bootstrap.js";
 import { SailClient } from "./sail-client.js";
 import type { DispatchBinding } from "./types.js";
@@ -21,57 +22,20 @@ export function shellQuote(value: string): string {
 }
 
 async function git(cwd: string, args: string[]): Promise<string> {
-	const result = await executeFile("git", ["-C", cwd, ...args], { maxBuffer: 64 * 1024 * 1024 });
+	const result = await executeFile("git", ["-C", cwd, ...args]);
 	return result.stdout;
 }
 
-interface CapturedProject {
-	cwdRelative: string;
-	origin: string;
-}
-
-function safeOrigin(value: string): string {
-	const origin = value.trim();
-	const github = /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)(.+)$/.exec(origin);
-	if (github) return `https://github.com/${github[1]}`;
-	if (/^https?:\/\//.test(origin)) {
-		const url = new URL(origin);
-		url.username = "";
-		url.password = "";
-		return url.toString();
-	}
-	return /^(git@[^:]+:|ssh:\/\/git@)/.test(origin) ? origin : "";
-}
-
-/** Capture live files without changing the user's Git index or copying .git config/hooks. */
-export async function captureLocalProject(sourceCwd: string, destination: string): Promise<CapturedProject> {
+export async function getDispatchProject(sourceCwd: string) {
 	const sourceRoot = (await git(sourceCwd, ["rev-parse", "--show-toplevel"])).trim();
-	const entries = await git(sourceRoot, ["ls-files", "--stage"]);
-	if (/^160000 /m.test(entries))
-		throw new Error("Dispatch MVP does not copy Git submodules; use a plain working tree");
-	const cwdRelative = relative(sourceRoot, await realpath(sourceCwd));
-	await mkdir(join(destination, "tree"), { recursive: true });
-	const files = (await git(sourceRoot, ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]))
-		.split("\0")
-		.filter(Boolean);
-	for (const file of new Set(files)) {
-		const source = join(sourceRoot, file);
-		const target = join(destination, "tree", file);
-		let stat: Awaited<ReturnType<typeof lstat>>;
-		try {
-			stat = await lstat(source);
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-			throw error;
-		}
-		if (!stat.isFile() && !stat.isSymbolicLink())
-			throw new Error(`Dispatch cannot snapshot directory entry: ${file}`);
-		await mkdir(dirname(target), { recursive: true });
-		await cp(source, target, { dereference: false, verbatimSymlinks: true });
-	}
-	await git(sourceRoot, ["bundle", "create", join(destination, "base.bundle"), "HEAD"]);
-	const origin = safeOrigin(await git(sourceRoot, ["remote", "get-url", "origin"]).catch(() => ""));
-	return { cwdRelative, origin };
+	const source = parseGitUrl(`git:${(await git(sourceRoot, ["remote", "get-url", "origin"])).trim()}`);
+	if (source?.host !== "github.com") throw new Error("Dispatch requires a GitHub origin remote");
+	return {
+		cwdRelative: relative(sourceRoot, await realpath(sourceCwd)),
+		origin: `https://github.com/${source.path}.git`,
+		userName: (await git(sourceRoot, ["config", "--get", "user.name"])).trim(),
+		userEmail: (await git(sourceRoot, ["config", "--get", "user.email"])).trim(),
+	};
 }
 
 function copyFilter(source: string): boolean {
@@ -122,9 +86,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 	let binding: DispatchBinding | undefined;
 	try {
 		options.signal?.throwIfAborted();
-		const project = join(staging, "project");
-		await mkdir(project);
-		const capture = await captureLocalProject(options.sourceCwd, project);
+		const project = await getDispatchProject(options.sourceCwd);
 		const runtime = join(staging, "runtime");
 		await cp(findRuntime(), runtime, { recursive: true, filter: copyFilter });
 		await cp(getBundledSkillsDir(), join(staging, "skills"), { recursive: true, filter: copyFilter });
@@ -139,7 +101,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 			ownsBox: true,
 			boxId: box.sailboxId,
 			guestRepoDir: GUEST_REPO,
-			guestCwd: `${GUEST_REPO}${capture.cwdRelative && capture.cwdRelative !== "." ? `/${capture.cwdRelative.split(sep).join("/")}` : ""}`,
+			guestCwd: `${GUEST_REPO}${project.cwdRelative && project.cwdRelative !== "." ? `/${project.cwdRelative.split(sep).join("/")}` : ""}`,
 			guestStateDir: `${GUEST_STATE}/${basename(options.sessionDir)}`,
 			guestPython: `${GUEST_INSTALL}/venv/bin/python`,
 			guestSkillsDir: `${GUEST_INSTALL}/skills`,
@@ -158,20 +120,13 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		const bootstrap = `set -eu
 mkdir -p ${GUEST_STATE} /workspace
 mv ${GUEST_INSTALL}/inputs /workspace/inputs
-mkdir -p ${GUEST_REPO}
-git -C ${GUEST_REPO} init -q
-git -C ${GUEST_REPO} fetch -q ${GUEST_INSTALL}/project/base.bundle HEAD
-git -C ${GUEST_REPO} checkout -q -b ${shellQuote(branch)} FETCH_HEAD
-find ${GUEST_REPO} -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf -- {} +
-cp -a ${GUEST_INSTALL}/project/tree/. ${GUEST_REPO}/
-git -C ${GUEST_REPO} config user.name 'Prime Dispatch'
-git -C ${GUEST_REPO} config user.email 'dispatch@localhost'
-git -C ${GUEST_REPO} add -Af
-git -C ${GUEST_REPO} commit --allow-empty -qm 'Starting working tree snapshot'
-${capture.origin ? `git -C ${GUEST_REPO} remote add origin ${shellQuote(capture.origin)}` : ""}
+git init -q -b ${shellQuote(branch)} ${GUEST_REPO}
+git -C ${GUEST_REPO} remote add origin ${shellQuote(project.origin)}
+git -C ${GUEST_REPO} pull -q --ff-only origin main
+git -C ${GUEST_REPO} config user.name ${shellQuote(project.userName)}
+git -C ${GUEST_REPO} config user.email ${shellQuote(project.userEmail)}
 uv venv --python 3.11 ${GUEST_INSTALL}/venv
 uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
-rm -rf ${GUEST_INSTALL}/project
 `;
 		await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
 		options.signal?.throwIfAborted();
