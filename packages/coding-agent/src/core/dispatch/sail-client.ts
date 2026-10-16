@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { Client } from "@sailresearch/sdk";
 
 export type SailExecEvent =
 	| { type: "started"; exec_request_id: string }
@@ -33,6 +34,7 @@ export class SailHttpError extends Error {
 
 /** Small single-attachment client: never retries an exec or replays Python input. */
 export class SailClient {
+	readonly sdk: Client;
 	private readonly apiKey: string;
 	private readonly baseUrl: string;
 	private readonly appsUrl: string;
@@ -43,6 +45,12 @@ export class SailClient {
 		this.baseUrl =
 			options.baseUrl ?? process.env.PRIME_AGENT_SAILBOX_URL ?? "https://sailbox-api.sailresearch.com/v1";
 		this.appsUrl = options.appsUrl ?? process.env.PRIME_AGENT_SAIL_APPS_URL ?? "https://api.sailresearch.com/v1";
+		// The SDK appends /v1 to its endpoint roots.
+		this.sdk = Client.fromConfig({
+			apiKey: this.apiKey,
+			sailboxApiUrl: this.baseUrl.replace(/\/v1\/?$/, ""),
+			apiUrl: this.appsUrl.replace(/\/v1\/?$/, ""),
+		});
 	}
 
 	private async request(path: string, init: RequestInit = {}, apps = false): Promise<Response> {

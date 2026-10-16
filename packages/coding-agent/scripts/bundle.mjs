@@ -48,6 +48,7 @@ const result = await build({
 	external: [
 		"koffi",
 		"undici",
+		"@sailresearch/sdk",
 		"@silvia-odwyer/photon-node",
 		"@mariozechner/clipboard",
 		// Preserve Node's CommonJS interop for the AWS SDK's lazy transport imports.
