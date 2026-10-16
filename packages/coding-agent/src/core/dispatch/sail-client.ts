@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Client } from "@sailresearch/sdk";
+import { AuthStorage } from "../auth-storage.js";
 
 export type SailExecEvent =
 	| { type: "started"; exec_request_id: string }
@@ -34,32 +35,41 @@ export class SailHttpError extends Error {
 
 /** Small single-attachment client: never retries an exec or replays Python input. */
 export class SailClient {
-	readonly sdk: Client;
-	private readonly apiKey: string;
+	private readonly apiKey: string | undefined;
 	private readonly baseUrl: string;
 	private readonly appsUrl: string;
 
 	constructor(options: { apiKey?: string; baseUrl?: string; appsUrl?: string } = {}) {
-		this.apiKey = options.apiKey ?? process.env.SAIL_API_KEY ?? "";
-		if (!this.apiKey) throw new Error("Dispatch requires SAIL_API_KEY");
+		this.apiKey = options.apiKey;
 		this.baseUrl =
 			options.baseUrl ?? process.env.PRIME_AGENT_SAILBOX_URL ?? "https://sailbox-api.sailresearch.com/v1";
 		this.appsUrl = options.appsUrl ?? process.env.PRIME_AGENT_SAIL_APPS_URL ?? "https://api.sailresearch.com/v1";
-		// The SDK appends /v1 to its endpoint roots.
-		this.sdk = Client.fromConfig({
-			apiKey: this.apiKey,
-			sailboxApiUrl: this.baseUrl.replace(/\/v1\/?$/, ""),
-			apiUrl: this.appsUrl.replace(/\/v1\/?$/, ""),
-		});
+	}
+
+	get sdk(): Promise<Client> {
+		return this.resolveApiKey().then((apiKey) =>
+			Client.fromConfig({
+				apiKey,
+				sailboxApiUrl: this.baseUrl.replace(/\/v1\/?$/, ""),
+				apiUrl: this.appsUrl.replace(/\/v1\/?$/, ""),
+			}),
+		);
+	}
+
+	private async resolveApiKey(): Promise<string> {
+		const apiKey = this.apiKey ?? (await AuthStorage.create().getApiKey("sail"));
+		if (!apiKey) throw new Error("Sail authentication required. Set SAIL_API_KEY or log in to Sail.");
+		return apiKey;
 	}
 
 	private async request(path: string, init: RequestInit = {}, apps = false): Promise<Response> {
+		const apiKey = await this.resolveApiKey();
 		const response = await fetch(`${apps ? this.appsUrl : this.baseUrl}${path}`, {
 			...init,
-			headers: { Authorization: `Bearer ${this.apiKey}`, ...init.headers },
+			headers: { Authorization: `Bearer ${apiKey}`, ...init.headers },
 		});
 		if (!response.ok) {
-			const detail = (await response.text()).slice(0, 2000).replaceAll(this.apiKey, "[redacted]");
+			const detail = (await response.text()).slice(0, 2000).replaceAll(apiKey, "[redacted]");
 			throw new SailHttpError(response.status, `Sail ${response.status}: ${detail}`);
 		}
 		return response;

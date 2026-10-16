@@ -5,7 +5,7 @@ import { resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import type { Component, OverlayHandle, TUI } from "@earendil-works/pi-tui";
 import stripAnsi from "strip-ansi";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
-import { ENV_AGENT_DIR } from "../src/config.js";
+import { ENV_AGENT_DIR, getAgentDir } from "../src/config.js";
 import { createAgentSessionServices } from "../src/core/agent-session-services.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
 import type { McpRemoveAccountResult } from "../src/core/mcp/connection-store.js";
@@ -180,9 +180,10 @@ describe("ProviderAuthFlows", () => {
 		process.env.HOME = tempDir;
 		vi.stubEnv(ENV_AGENT_DIR, "");
 		vi.stubEnv("PI_OFFLINE", "1");
-		authJsonPath = join(tempDir, ".prime", "agent", "auth.json");
+		authJsonPath = join(getAgentDir(), "auth.json");
 		primeConfigPath = join(tempDir, ".prime", "config.json");
-		mkdirSync(join(tempDir, ".prime", "agent"), { recursive: true });
+		mkdirSync(getAgentDir(), { recursive: true });
+		mkdirSync(join(tempDir, ".prime"), { recursive: true });
 		process.env.PRIME_TEAM_ID = "env-team";
 		writeFileSync(
 			primeConfigPath,
@@ -464,7 +465,7 @@ describe("ProviderAuthFlows", () => {
 		},
 	);
 
-	it("includes xAI subscription and API-key entries from the provider registry", () => {
+	it("lists xAI auth methods and one shared Sail login", () => {
 		const { host } = createHost(AuthStorage.inMemory());
 		const flows = new ProviderAuthFlows({
 			...host,
@@ -474,6 +475,9 @@ describe("ProviderAuthFlows", () => {
 		expect(flows.getLoginProviderOptions().filter((provider) => provider.id === "xai")).toEqual([
 			{ id: "xai", name: "xAI (Grok)", authType: "oauth" },
 			{ id: "xai", name: "xAI (Grok)", authType: "api_key" },
+		]);
+		expect(flows.getLoginProviderOptions().filter((provider) => provider.id.startsWith("sail"))).toEqual([
+			{ id: "sail", name: "Sail", authType: "api_key" },
 		]);
 	});
 

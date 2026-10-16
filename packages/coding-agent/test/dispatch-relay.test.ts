@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ENV_AGENT_DIR } from "../src/config.js";
+import { AuthStorage } from "../src/core/auth-storage.js";
 import { hasDispatchKernels } from "../src/core/dispatch/kernel.js";
+import { SailClient } from "../src/core/dispatch/sail-client.js";
 import type { DispatchBinding } from "../src/core/dispatch/types.js";
 import {
 	inheritDispatchWorkspace,
@@ -33,6 +36,7 @@ async function fixture() {
 	const waiting = new Promise<void>((resolve) => {
 		waitStarted = resolve;
 	});
+	const authHeaders: (string | undefined)[] = [];
 	const commands: Record<string, unknown>[] = [];
 	const frames: Record<string, unknown>[] = [];
 	const writes: { offset: number; data: Buffer }[] = [];
@@ -54,6 +58,7 @@ async function fixture() {
 	const done = (exec: NonNullable<ReturnType<typeof executions.get>>, id: unknown, extra: object = {}) =>
 		protocol(exec, { event: "done", id, status: "ok", ...extra });
 	const server = createServer(async (request, response) => {
+		authHeaders.push(request.headers.authorization);
 		const chunks = [];
 		for await (const chunk of request) chunks.push(Buffer.from(chunk));
 		const data = Buffer.concat(chunks);
@@ -137,6 +142,7 @@ async function fixture() {
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
 	if (!address || typeof address === "string") throw new Error("Missing fixture address");
+	vi.stubEnv(ENV_AGENT_DIR, dir);
 	vi.stubEnv("SAIL_API_KEY", "fixture-key");
 	vi.stubEnv("GH_TOKEN", "fixture-gh-token");
 	vi.stubEnv("GITHUB_TOKEN", "fixture-github-token");
@@ -165,6 +171,7 @@ async function fixture() {
 		writes,
 		cancellations,
 		boxActions,
+		authHeaders,
 		waitBodyLengths,
 		waiting,
 		finishWait() {
@@ -190,6 +197,26 @@ describe("Sail kernel relay", () => {
 	afterEach(() => {
 		vi.unstubAllEnvs();
 	});
+	it("uses native Sail login changes and logout for subsequent dispatch requests", async () => {
+		const f = await fixture();
+		try {
+			const auth = AuthStorage.create();
+			const client = new SailClient();
+			auth.set("sail-asap", { type: "api_key", key: "stored-key" });
+			await (await client.sdk).terminateSailbox("sdk");
+			auth.set("sail", { type: "api_key", key: "changed-key" });
+			await sleepDispatchWorkspace(f.binding);
+			auth.logout("sail-asap");
+			await (await client.sdk).terminateSailbox("sdk");
+			vi.stubEnv("SAIL_API_KEY", undefined);
+			await expect(sleepDispatchWorkspace(f.binding)).rejects.toThrow("Sail authentication required");
+			await expect(client.sdk).rejects.toThrow("Sail authentication required");
+			expect(f.authHeaders).toEqual(["Bearer stored-key", "Bearer changed-key", "Bearer fixture-key"]);
+		} finally {
+			await f.close();
+		}
+	});
+
 	it("runs the unchanged REPL protocol through a real relay, including host replies and guest snapshots", async () => {
 		const f = await fixture();
 		const hostRequests: Record<string, unknown>[] = [];

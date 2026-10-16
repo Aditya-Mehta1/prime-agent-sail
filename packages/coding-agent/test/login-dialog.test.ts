@@ -249,6 +249,15 @@ describe("LoginDialogComponent", () => {
 		await expect(second).resolves.toBe("pk");
 	});
 
+	it("masks secret input without changing the submitted credential", async () => {
+		const dialog = new LoginDialogComponent(createFakeTui(), "sail", () => {}, "Sail", undefined, { masked: true });
+		const submitted = dialog.showPrompt("Sail API key:");
+		for (const character of "fake-secret-key") dialog.handleInput(character);
+		expect(stripAnsi(dialog.render(88).join("\n"))).not.toContain("fake-secret-key");
+		dialog.handleInput("\r");
+		await expect(submitted).resolves.toBe("fake-secret-key");
+	});
+
 	it("renders API key prompts with the bordered inline input", () => {
 		const dialog = new LoginDialogComponent(createFakeTui(), "openai", () => {}, "OpenAI");
 

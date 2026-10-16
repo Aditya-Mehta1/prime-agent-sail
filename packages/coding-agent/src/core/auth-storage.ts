@@ -23,6 +23,10 @@ import { realpathIfPresentSync, writeFileAtomicSync } from "../utils/atomic-file
 import { getPrimeCliConfigPath, PRIME_INFERENCE_PROVIDER_ID, type PrimeTeam } from "./prime-inference-auth.js";
 import { resolveConfigValue, resolveConfigValueUncached } from "./resolve-config-value.js";
 
+function credentialProvider(provider: string): string {
+	return provider === "sail-asap" ? "sail" : provider;
+}
+
 export type PrimeTeamCredential = {
 	teamId: string;
 	name: string;
@@ -318,6 +322,7 @@ export class AuthStorage {
 	 * Used for CLI --api-key flag.
 	 */
 	setRuntimeApiKey(provider: string, apiKey: string): void {
+		provider = credentialProvider(provider);
 		this.clearStaleAuthSource(provider, "runtime");
 		this.runtimeOverrides.set(provider, apiKey);
 	}
@@ -326,6 +331,7 @@ export class AuthStorage {
 	 * Remove a runtime API key override.
 	 */
 	removeRuntimeApiKey(provider: string): void {
+		provider = credentialProvider(provider);
 		this.clearStaleAuthSource(provider, "runtime");
 		this.runtimeOverrides.delete(provider);
 	}
@@ -601,6 +607,7 @@ export class AuthStorage {
 	}
 
 	getCurrentAuthSourceToken(provider: string): AuthSourceToken | undefined {
+		provider = credentialProvider(provider);
 		const { candidate } = this.getAvailableAuthCandidate(provider);
 		if (!candidate) {
 			return undefined;
@@ -609,6 +616,7 @@ export class AuthStorage {
 	}
 
 	markAuthSourceStale(token: AuthSourceToken): boolean {
+		token = { ...token, provider: credentialProvider(token.provider) };
 		if (token.provider.length === 0) {
 			return false;
 		}
@@ -629,6 +637,7 @@ export class AuthStorage {
 
 	/** Forget every stale marking for a provider (explicit user re-selection). */
 	clearAuthStale(provider: string): void {
+		provider = credentialProvider(provider);
 		this.staleAuthSources.delete(provider);
 	}
 
@@ -699,6 +708,7 @@ export class AuthStorage {
 	 * Get credential for a provider.
 	 */
 	get(provider: string): AuthCredential | undefined {
+		provider = credentialProvider(provider);
 		return this.data[provider] ?? undefined;
 	}
 
@@ -706,6 +716,7 @@ export class AuthStorage {
 	 * Set credential for a provider.
 	 */
 	set(provider: string, credential: AuthCredential): void {
+		provider = credentialProvider(provider);
 		this.clearStaleAuthSource(provider, "stored");
 		this.data[provider] = credential;
 		this.persistProviderChange(provider, credential);
@@ -715,6 +726,7 @@ export class AuthStorage {
 	 * Remove credential for a provider.
 	 */
 	remove(provider: string): void {
+		provider = credentialProvider(provider);
 		this.clearStaleAuthSource(provider, "stored");
 		delete this.data[provider];
 		this.persistProviderChange(provider, undefined);
@@ -728,6 +740,7 @@ export class AuthStorage {
 	 * Returns whether a credential was actually removed from disk.
 	 */
 	removeVerified(provider: string): boolean {
+		provider = credentialProvider(provider);
 		const removed = this.storage.withLock((current) => {
 			const currentData = this.parseStorageData(current);
 			if (!(provider in currentData)) return { result: false };
@@ -757,6 +770,8 @@ export class AuthStorage {
 		stagedProvider: string,
 		provider: string,
 	): { status: "occupied" } | { status: "nothing" } | { status: "moved"; credential: AuthCredential } {
+		provider = credentialProvider(provider);
+		stagedProvider = credentialProvider(stagedProvider);
 		type MoveOutcome =
 			| { status: "occupied" }
 			| { status: "nothing" }
@@ -791,6 +806,7 @@ export class AuthStorage {
 	 * anyone else is never overwritten.
 	 */
 	restoreCredentialIfAbsent(provider: string, credential: AuthCredential): boolean {
+		provider = credentialProvider(provider);
 		const restored = this.storage.withLock((current) => {
 			const currentData = this.parseStorageData(current);
 			if (provider in currentData) {
@@ -814,6 +830,7 @@ export class AuthStorage {
 	 * succeeds.
 	 */
 	removeIfCredentialMatches(provider: string, expected: AuthCredential): boolean {
+		provider = credentialProvider(provider);
 		const removed = this.storage.withLock((current) => {
 			const currentData = this.parseStorageData(current);
 			const currentCredential = currentData[provider];
@@ -841,6 +858,7 @@ export class AuthStorage {
 	 * expects to replace (legacy/credential-only accounts included).
 	 */
 	getVerified(provider: string): AuthCredential | undefined {
+		provider = credentialProvider(provider);
 		return this.storage.withLock((current) => {
 			const currentData = this.parseStorageData(current);
 			return { result: currentData[provider] };
@@ -862,6 +880,8 @@ export class AuthStorage {
 		provider: string,
 		expectedOld: AuthCredential | undefined,
 	): { status: "occupied" } | { status: "nothing" } | { status: "replaced"; credential: AuthCredential } {
+		provider = credentialProvider(provider);
+		stagedProvider = credentialProvider(stagedProvider);
 		type ReplaceOutcome =
 			| { status: "occupied" }
 			| { status: "nothing" }
@@ -901,6 +921,7 @@ export class AuthStorage {
 	 * only this attempt's own write — a newer writer is never clobbered.
 	 */
 	replaceCredentialIfMatches(provider: string, expected: AuthCredential, next: AuthCredential): boolean {
+		provider = credentialProvider(provider);
 		const replaced = this.storage.withLock((current) => {
 			const currentData = this.parseStorageData(current);
 			const existing = currentData[provider];
@@ -928,6 +949,7 @@ export class AuthStorage {
 	 * Check if credentials exist for a provider in auth.json.
 	 */
 	has(provider: string): boolean {
+		provider = credentialProvider(provider);
 		return provider in this.data;
 	}
 
@@ -936,6 +958,7 @@ export class AuthStorage {
 	 * Unlike getApiKey(), this doesn't refresh OAuth tokens.
 	 */
 	hasAuth(provider: string): boolean {
+		provider = credentialProvider(provider);
 		return this.getAvailableAuthCandidate(provider).candidate !== undefined;
 	}
 
@@ -943,6 +966,7 @@ export class AuthStorage {
 	 * Return auth status without exposing credential values or refreshing tokens.
 	 */
 	getAuthStatus(provider: string): AuthStatus {
+		provider = credentialProvider(provider);
 		return this.getAuthStatusFromCandidates(provider);
 	}
 
@@ -1045,6 +1069,7 @@ export class AuthStorage {
 		providerId: string,
 		options?: { includeFallback?: boolean },
 	): Promise<AuthApiKeyResult> {
+		providerId = credentialProvider(providerId);
 		// Runtime overrides take precedence over stored credentials and environment keys.
 		const runtimeCandidate = this.getRuntimeAuthCandidate(providerId);
 		const runtimeKey = this.runtimeOverrides.get(providerId);

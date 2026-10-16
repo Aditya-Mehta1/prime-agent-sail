@@ -328,12 +328,12 @@ export class ProviderAuthFlows {
 
 		const modelProviders = new Set(this.host.modelRegistry.getAll().map((model) => model.provider));
 		for (const providerId of modelProviders) {
-			if (!isApiKeyLoginProvider(providerId, oauthProviderIds)) {
+			if (providerId === "sail-asap" || !isApiKeyLoginProvider(providerId, oauthProviderIds)) {
 				continue;
 			}
 			options.push({
 				id: providerId,
-				name: this.host.modelRegistry.getProviderDisplayName(providerId),
+				name: providerId === "sail" ? "Sail" : this.host.modelRegistry.getProviderDisplayName(providerId),
 				authType: "api_key",
 			});
 		}
@@ -366,7 +366,9 @@ export class ProviderAuthFlows {
 				? SERPER_CREDENTIAL_NAME
 				: isMcp
 					? (oauthProvidersById.get(providerId)?.name ?? providerId.slice("mcp:".length))
-					: this.host.modelRegistry.getProviderDisplayName(providerId);
+					: providerId === "sail"
+						? "Sail"
+						: this.host.modelRegistry.getProviderDisplayName(providerId);
 			options.push({
 				id: providerId,
 				name,
@@ -849,7 +851,7 @@ export class ProviderAuthFlows {
 			(_success, _message) => {},
 			providerName,
 			undefined,
-			this.loginDialogOptions(),
+			{ ...this.loginDialogOptions(), masked: true },
 		);
 
 		const closeDialog = this.host.showAuthPanel(dialog);

@@ -70,6 +70,30 @@ describe("AuthStorage", () => {
 	}
 
 	describe("API key resolution", () => {
+		test.each(["sail", "sail-asap"])("shares Sail credentials through %s", async (provider) => {
+			vi.stubEnv("SAIL_API_KEY", undefined);
+			try {
+				authStorage = AuthStorage.create(authJsonPath);
+				const credential = { type: "api_key" as const, key: "updated-sail-key" };
+				authStorage.set(provider, credential);
+				expect(JSON.parse(readFileSync(authJsonPath, "utf8"))).toEqual({ sail: credential });
+				await expect(AuthStorage.create(authJsonPath).getApiKey("sail")).resolves.toBe("updated-sail-key");
+				authStorage.setRuntimeApiKey("sail-asap", "runtime-sail-key");
+				await expect(authStorage.getApiKey("sail")).resolves.toBe("runtime-sail-key");
+				expect(authStorage.markAuthStale(provider)).toBe(true);
+				await expect(authStorage.getApiKey("sail-asap")).resolves.toBe("updated-sail-key");
+				authStorage.removeRuntimeApiKey("sail");
+				expect(authStorage.markAuthStale("sail-asap")).toBe(true);
+				await expect(authStorage.getApiKey("sail")).resolves.toBeUndefined();
+				authStorage.set(provider, { type: "api_key", key: "fresh-sail-key" });
+				await expect(authStorage.getApiKey("sail-asap")).resolves.toBe("fresh-sail-key");
+				authStorage.logout("sail-asap");
+				expect(AuthStorage.create(authJsonPath).list()).toEqual([]);
+			} finally {
+				vi.unstubAllEnvs();
+			}
+		});
+
 		test("resolves stored keys as literals or environment variable names", async () => {
 			const envVar = "TEST_AUTH_API_KEY_12345";
 			const previous = process.env[envVar];

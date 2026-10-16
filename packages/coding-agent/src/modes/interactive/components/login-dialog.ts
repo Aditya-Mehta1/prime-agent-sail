@@ -64,7 +64,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 		private onComplete: (success: boolean, message?: string) => void,
 		providerNameOverride?: string,
 		titleOverride?: string,
-		private dialogOptions: { topRule?: boolean; hideTitle?: boolean; onExit?: () => void } = {},
+		private dialogOptions: { topRule?: boolean; hideTitle?: boolean; masked?: boolean; onExit?: () => void } = {},
 	) {
 		super();
 		this.tui = tui;
@@ -89,7 +89,7 @@ export class LoginDialogComponent extends Container implements Focusable {
 
 		// Input (always present, used when needed)
 		// Plain field: the enclosing rules read as clutter in the login panel.
-		this.input = new MenuSearchInput("Paste value", true, true);
+		this.input = new MenuSearchInput("Paste value", true, true, false, { masked: this.dialogOptions.masked });
 		this.input.onSubmit = () => {
 			if (this.inputResolver) {
 				this.inputResolver(this.input.getValue());

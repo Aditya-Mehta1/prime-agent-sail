@@ -118,6 +118,7 @@ import {
 	type SessionSummary,
 } from "./modes/index.js";
 import { ExtensionSelectorComponent } from "./modes/interactive/components/extension-selector.js";
+import { LoginDialogComponent } from "./modes/interactive/components/login-dialog.js";
 import { shouldRunOnboarding } from "./modes/interactive/onboarding.js";
 import { initTheme, preloadCodeHighlighter, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 import { handleConfigCommand } from "./package-manager-cli.js";
@@ -354,7 +355,7 @@ const STARTUP_SESSION_LOSS_COPY: DaemonSessionLossCopy = {
 	unlistableDetail:
 		"A background service from a different Prime Agent version is running and its sessions could not be listed. Stopping it may terminate active sessions.",
 	question: "Stop it and continue?",
-	nonTtyHint: 'Run "prime-agent shutdown" to stop it, then retry.',
+	nonTtyHint: `Run "${APP_NAME} shutdown" to stop it, then retry.`,
 };
 
 // The promise to keep after awaiting readiness. Wrapped in an object so it
@@ -376,7 +377,7 @@ async function takeOverStaleDaemonOrExit(socketPath: string): Promise<DaemonRead
 	}
 	if (!(await shutdownDaemonAndWait(socketPath))) {
 		console.error(
-			chalk.red(`Could not stop the background service on ${socketPath}. Run "prime-agent shutdown" and retry.`),
+			chalk.red(`Could not stop the background service on ${socketPath}. Run "${APP_NAME} shutdown" and retry.`),
 		);
 		process.exit(1);
 	}
@@ -928,6 +929,34 @@ async function resolvePreparedStartupModel(options: {
 	return { model, modelFallbackMessage };
 }
 
+export async function ensureSailAuthentication(settings: SettingsManager, interactive: boolean): Promise<void> {
+	const authStorage = AuthStorage.create();
+	if (await authStorage.getApiKey("sail")) return;
+	if (!interactive) {
+		throw new Error("Set SAIL_API_KEY or run prime-agent-sail in a terminal to save a key.");
+	}
+	initTheme(settings.getTheme());
+	setKeybindings(KeybindingsManager.create());
+	const ui = new TUI(new ProcessTerminal(), settings.getShowHardwareCursor());
+	const dialog = new LoginDialogComponent(ui, "sail", () => {}, "Sail", undefined, {
+		masked: true,
+		onExit: () => dialog.abort(),
+	});
+	ui.addChild(dialog);
+	ui.setFocus(dialog);
+	const input = dialog.showPrompt("Sail API key:");
+	ui.start();
+	try {
+		const key = (await input).trim();
+		if (!key) throw new Error("Sail API key cannot be empty.");
+		authStorage.set("sail", { type: "api_key", key });
+		const [error] = authStorage.drainErrors();
+		if (error) throw error;
+	} finally {
+		ui.stop();
+	}
+}
+
 async function promptForMissingSessionCwd(
 	issue: SessionCwdIssue,
 	settingsManager: SettingsManager,
@@ -1243,6 +1272,18 @@ export async function main(args: string[], options?: MainOptions) {
 
 	const agentDir = getAgentDir();
 	const startupSettingsManager = SettingsManager.create(cwd, agentDir);
+	if (appMode !== "daemon" && !isOwnedSessionWorkerProcess() && parsed.listModels === undefined) {
+		try {
+			await ensureSailAuthentication(startupSettingsManager, appMode === "interactive");
+		} catch (error) {
+			console.error(chalk.red(error instanceof Error ? error.message : String(error)));
+			process.exit(1);
+		}
+	}
+	if (!startupSettingsManager.getDefaultProvider() && !startupSettingsManager.getDefaultModel()) {
+		startupSettingsManager.setDefaultModelAndProvider("sail-asap", "zai-org/GLM-5.3-Flash");
+		await startupSettingsManager.flush();
+	}
 	reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
 	const startupBenchmark = isTruthyEnvFlag(process.env.PI_STARTUP_BENCHMARK);
 	if (startupBenchmark && appMode !== "interactive") {
