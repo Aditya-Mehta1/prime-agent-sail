@@ -1,19 +1,18 @@
+import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 import { ENV_AGENT_DIR } from "../src/config.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
-import { hasDispatchKernels } from "../src/core/dispatch/kernel.js";
+import { createDispatchKernelLauncher, hasDispatchKernels } from "../src/core/dispatch/kernel.js";
 import { SailClient } from "../src/core/dispatch/sail-client.js";
 import type { DispatchBinding } from "../src/core/dispatch/types.js";
-import {
-	inheritDispatchWorkspace,
-	sleepDispatchWorkspace,
-	terminateDispatchWorkspace,
-} from "../src/core/dispatch/workspace.js";
+import { inheritDispatchWorkspace, terminateDispatchWorkspace } from "../src/core/dispatch/workspace.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 import { createHarness } from "./suite/harness.js";
 
@@ -31,7 +30,7 @@ async function fixture() {
 		}
 	>();
 	let rejectCancel = false;
-	let waitResponse: ServerResponse | undefined;
+	let finishCancellation = () => {};
 	let waitStarted!: () => void;
 	const waiting = new Promise<void>((resolve) => {
 		waitStarted = resolve;
@@ -42,7 +41,6 @@ async function fixture() {
 	const writes: { offset: number; data: Buffer }[] = [];
 	const cancellations: string[] = [];
 	const boxActions: string[] = [];
-	const waitBodyLengths: number[] = [];
 	let disconnected!: () => void;
 	const disconnect = new Promise<void>((resolve) => {
 		disconnected = resolve;
@@ -66,16 +64,15 @@ async function fixture() {
 		if (url.pathname.endsWith("/exec")) {
 			const command = JSON.parse(data.toString()) as Record<string, unknown>;
 			commands.push(command);
+			const exec = { output: response, offset: 0, buffered: "", sequence: 1, activeId: "", hostSequence: 0 };
+			executions.set(String(command.idempotency_key), exec);
+			response.writeHead(200, { "Content-Type": "application/x-ndjson" });
+			event(exec, { type: "started", exec_request_id: command.idempotency_key });
 			if (!command.open_stdin) {
-				response
-					.writeHead(200, { "Content-Type": "application/x-ndjson" })
-					.end(`${JSON.stringify({ type: "exit", return_code: 0, status: "succeeded" })}\n`);
+				event(exec, { type: "exit", return_code: 0, status: "succeeded" });
+				response.end();
 				return;
 			}
-			const exec = { output: response, offset: 0, buffered: "", sequence: 0, activeId: "", hostSequence: 0 };
-			executions.set(`exec-${commands.length}`, exec);
-			response.writeHead(200, { "Content-Type": "application/x-ndjson" });
-			event(exec, { type: "started", exec_request_id: `exec-${commands.length}` });
 			protocol(exec, { event: "ready", protocol: 3 });
 			response.once("close", disconnected);
 			return;
@@ -88,57 +85,78 @@ async function fixture() {
 		const exec = executions.get(url.searchParams.get("exec_request_id")!)!;
 		if (url.pathname.endsWith("/cancel")) {
 			cancellations.push(url.searchParams.get("exec_request_id")!);
-			response.writeHead(rejectCancel ? 503 : 200, { "Content-Type": "application/json" });
-			response.end("{}");
-			if (!rejectCancel) {
-				event(exec, { type: "exit", return_code: 0, status: "cancelled" });
-				exec.output.end();
+			if (rejectCancel) {
+				response
+					.writeHead(403, { "Content-Type": "application/json" })
+					.end('{"message":"fixture cancellation denied"}');
+			} else {
+				response.writeHead(200, { "Content-Type": "application/json" }).end("{}");
+				finishCancellation = () => {
+					event(exec, { type: "exit", return_code: 137, status: "failed" });
+					exec.output.end();
+				};
 			}
-			return;
-		}
-		if (url.pathname.endsWith("/wait")) {
-			waitBodyLengths.push(data.length);
-			waitResponse = response;
 			waitStarted();
 			return;
 		}
-		if (!url.pathname.endsWith("/stdin")) {
-			response.writeHead(404).end();
+		if (url.pathname.endsWith("/wait")) {
+			response.writeHead(200, { "Content-Type": "application/json" }).end(
+				JSON.stringify({
+					status: "failed",
+					return_code: 137,
+					stdout: "",
+					stderr: "",
+				}),
+			);
 			return;
 		}
-		writes.push({ offset: Number(url.searchParams.get("offset")), data });
-		exec.offset += data.length;
-		response
-			.writeHead(200, { "Content-Type": "application/json" })
-			.end(JSON.stringify({ accepted_through: exec.offset }));
-		exec.buffered += data.toString();
-		let newline = exec.buffered.indexOf("\n");
-		while (newline >= 0) {
-			const frame = JSON.parse(exec.buffered.slice(0, newline)) as Record<string, unknown>;
-			exec.buffered = exec.buffered.slice(newline + 1);
-			frames.push(frame);
-			newline = exec.buffered.indexOf("\n");
-			if (frame.type === "execute" && frame.code === "needs-host") {
-				exec.activeId = String(frame.id);
-				protocol(exec, {
-					event: "host_request",
-					id: `host-${++exec.hostSequence}`,
-					data: { type: "rlm.run", prompt: "remote child" },
-				});
-			} else if (frame.type === "host_reply") {
-				protocol(exec, { event: "result", id: exec.activeId, text: "λ remote result" });
-				done(exec, exec.activeId);
-			} else if (frame.type === "execute" && frame.code === "drop-transport") {
-				exec.output.destroy();
-			} else if (frame.type === "restore") done(exec, frame.id, { restored: ["counter"], failed: [] });
-			else if (frame.type === "snapshot") done(exec, frame.id, { saved: ["counter"], skipped: [], bytes: 12 });
-			else if (frame.type === "shutdown") {
-				done(exec, frame.id);
-				event(exec, { type: "exit", return_code: 0, status: "completed" });
-				exec.output.end();
-			} else done(exec, frame.id);
-		}
+		response.writeHead(404).end();
 	});
+	let stdinDisconnected!: () => void;
+	const stdinClosed = new Promise<void>((resolve) => {
+		stdinDisconnected = resolve;
+	});
+	const sockets = new WebSocketServer({ server });
+	sockets.on("connection", (socket) => socket.once("close", stdinDisconnected));
+	sockets.on("connection", (socket, request) =>
+		socket.on("message", (raw) => {
+			const packet = Array.isArray(raw) ? Buffer.concat(raw) : Buffer.isBuffer(raw) ? raw : Buffer.from(raw);
+			const url = new URL(request.url!, "http://localhost");
+			const exec = executions.get(url.searchParams.get("exec_request_id")!)!;
+			const offset = Number(packet.readBigUInt64BE(0));
+			const data = packet.subarray(9);
+			writes.push({ offset, data });
+			exec.offset += data.length;
+			socket.send(JSON.stringify({ accepted_through: exec.offset }));
+			exec.buffered += data.toString();
+			let newline = exec.buffered.indexOf("\n");
+			while (newline >= 0) {
+				const frame = JSON.parse(exec.buffered.slice(0, newline)) as Record<string, unknown>;
+				exec.buffered = exec.buffered.slice(newline + 1);
+				frames.push(frame);
+				newline = exec.buffered.indexOf("\n");
+				if (frame.type === "execute" && frame.code === "needs-host") {
+					exec.activeId = String(frame.id);
+					protocol(exec, {
+						event: "host_request",
+						id: `host-${++exec.hostSequence}`,
+						data: { type: "rlm.run", prompt: "remote child" },
+					});
+				} else if (frame.type === "host_reply") {
+					protocol(exec, { event: "result", id: exec.activeId, text: "λ remote result" });
+					done(exec, exec.activeId);
+				} else if (frame.type === "execute" && frame.code === "drop-transport") {
+					exec.output.destroy();
+				} else if (frame.type === "restore") done(exec, frame.id, { restored: ["counter"], failed: [] });
+				else if (frame.type === "snapshot") done(exec, frame.id, { saved: ["counter"], skipped: [], bytes: 12 });
+				else if (frame.type === "shutdown") {
+					done(exec, frame.id);
+					event(exec, { type: "exit", return_code: 0, status: "succeeded" });
+					exec.output.end();
+				} else done(exec, frame.id);
+			}
+		}),
+	);
 	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 	const address = server.address();
 	if (!address || typeof address === "string") throw new Error("Missing fixture address");
@@ -151,7 +169,7 @@ async function fixture() {
 		version: 2,
 		ownsBox: true,
 		appId: "test-app",
-		boxId: dir,
+		boxId: `sb_${randomUUID()}`,
 		guestRepoDir: "/state/repo",
 		guestCwd: "/state/repo/subdir",
 		guestStateDir: "/state/session",
@@ -172,19 +190,20 @@ async function fixture() {
 		cancellations,
 		boxActions,
 		authHeaders,
-		waitBodyLengths,
 		waiting,
 		finishWait() {
-			waitResponse
-				?.writeHead(200, { "Content-Type": "application/json" })
-				.end(JSON.stringify({ status: "succeeded" }));
-			waitResponse = undefined;
+			const finish = finishCancellation;
+			finishCancellation = () => {};
+			finish();
 		},
 		disconnect,
+		stdinClosed,
 		setRejectCancel(value: boolean) {
 			rejectCancel = value;
 		},
 		async close() {
+			for (const socket of sockets.clients) socket.terminate();
+			await new Promise<void>((resolve, reject) => sockets.close((error) => (error ? reject(error) : resolve())));
 			for (const exec of executions.values()) exec.output.destroy();
 			server.closeAllConnections();
 			await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
@@ -205,11 +224,11 @@ describe("Sail kernel relay", () => {
 			auth.set("sail-asap", { type: "api_key", key: "stored-key" });
 			await (await client.sdk).terminateSailbox("sdk");
 			auth.set("sail", { type: "api_key", key: "changed-key" });
-			await sleepDispatchWorkspace(f.binding);
+			await terminateDispatchWorkspace(f.binding);
 			auth.logout("sail-asap");
 			await (await client.sdk).terminateSailbox("sdk");
 			vi.stubEnv("SAIL_API_KEY", undefined);
-			await expect(sleepDispatchWorkspace(f.binding)).rejects.toThrow("Sail authentication required");
+			await expect(terminateDispatchWorkspace(f.binding)).rejects.toThrow("Sail authentication required");
 			await expect(client.sdk).rejects.toThrow("Sail authentication required");
 			expect(f.authHeaders).toEqual(["Bearer stored-key", "Bearer changed-key", "Bearer fixture-key"]);
 		} finally {
@@ -256,12 +275,9 @@ describe("Sail kernel relay", () => {
 			});
 			await provisioner.dispose();
 			expect(f.commands).toHaveLength(2);
-			expect(f.commands[0].command).toBe(
-				"uv pip install --python '/state/venv/bin/python' -q '/state/repo/subdir/skills/project-skill'",
-			);
+			expect(f.commands[0].command).toEqual(["/bin/sh", "-lc", expect.stringContaining("uv pip install --python")]);
 			expect(f.commands[1]).toMatchObject({
-				command: "exec '/state/venv/bin/python' -u -m rlm.repl",
-				cwd: "/state/repo/subdir",
+				command: ["/bin/sh", "-lc", expect.stringContaining("rlm.repl")],
 				open_stdin: true,
 				env: { GH_TOKEN: "explicit-guest-token", RLM_SESSION_DIR: "/state/session" },
 			});
@@ -282,7 +298,9 @@ describe("Sail kernel relay", () => {
 				expect(write.offset).toBe(offset);
 				offset += write.data.length;
 			}
+			await f.stdinClosed;
 			expect(f.cancellations).toEqual([]);
+			expect(f.boxActions).toEqual([]);
 		} finally {
 			await provisioner.dispose().catch(() => undefined);
 			await f.close();
@@ -311,19 +329,19 @@ describe("Sail kernel relay", () => {
 				childKernel = await child.ensure();
 			await Promise.all([parentKernel.execute("needs-host"), childKernel.execute("needs-host")]);
 			expect(calls.sort()).toEqual([binding.guestStateDir, f.binding.guestStateDir].sort());
-			expect(f.commands.map((c) => c.cwd)).toEqual([f.binding.guestCwd, f.binding.guestCwd]);
+			for (const command of f.commands)
+				expect(command.command).toEqual(["/bin/sh", "-lc", expect.stringContaining(f.binding.guestCwd)]);
 			expect(f.frames.filter((frame) => frame.type === "restore").map((frame) => frame.path)).toEqual([
 				`${f.binding.guestStateDir}/kernel-state.dill`,
 				`${binding.guestStateDir}/kernel-state.dill`,
 			]);
-			await sleepDispatchWorkspace(binding);
 			await terminateDispatchWorkspace(binding);
 			expect(f.boxActions).toEqual([]);
 			const stopped = child.kill();
 			await f.waiting;
 			f.finishWait();
 			await stopped;
-			expect(f.cancellations).toEqual(["exec-2"]);
+			expect(f.cancellations).toEqual([f.commands[1].idempotency_key]);
 			expect(hasDispatchKernels(f.binding.boxId)).toBe(true);
 			expect((await parentKernel.execute("needs-host")).status).toBe("ok");
 			await owner.dispose();
@@ -345,7 +363,6 @@ describe("Sail kernel relay", () => {
 				killed = true;
 			});
 			await f.waiting;
-			expect(f.waitBodyLengths).toEqual([0]);
 			expect(killed).toBe(false);
 			await expect(provisioner.ensure()).rejects.toThrow("transport terminated");
 			expect(f.commands).toHaveLength(1);
@@ -354,10 +371,31 @@ describe("Sail kernel relay", () => {
 			const replacement = await provisioner.ensure();
 			expect(replacement.isRunning).toBe(true);
 			expect(f.commands).toHaveLength(2);
-			expect(f.cancellations).toEqual(["exec-1"]);
+			expect(f.cancellations).toEqual([f.commands[0].idempotency_key]);
 		} finally {
 			f.finishWait();
 			await provisioner.dispose().catch(() => undefined);
+			await f.close();
+		}
+	});
+
+	it("requires manual recovery after a relay crash without a second transport or kernel", async () => {
+		const f = await fixture();
+		const launcher = createDispatchKernelLauncher(f.binding, {});
+		const child = launcher.spawn();
+		const exited = once(child, "exit");
+		try {
+			await once(child, "message");
+			child.kill("SIGKILL");
+			await exited;
+			await expect(launcher.stop(child)).rejects.toThrow(f.binding.boxId);
+			expect(() => launcher.spawn()).toThrow("termination is unverified");
+			expect(f.commands).toHaveLength(1);
+			expect(f.cancellations).toEqual([]);
+			expect(hasDispatchKernels(f.binding.boxId)).toBe(true);
+		} finally {
+			child.kill("SIGKILL");
+			await exited;
 			await f.close();
 		}
 	});
@@ -373,8 +411,8 @@ describe("Sail kernel relay", () => {
 			]);
 			await harness.session.prompt("work");
 			await f.disconnect;
-			await expect(harness.session.disposeAsync({ kernelSnapshot: false })).rejects.toThrow("503");
-			await expect(harness.session.disposeAsync({ kernelSnapshot: false })).rejects.toThrow("503");
+			await expect(harness.session.disposeAsync({ kernelSnapshot: false })).rejects.toThrow("PermissionDeniedError");
+			await expect(harness.session.disposeAsync({ kernelSnapshot: false })).rejects.toThrow("PermissionDeniedError");
 			expect(hasDispatchKernels(f.binding.boxId)).toBe(true);
 		} finally {
 			harness.cleanup();
@@ -391,11 +429,11 @@ describe("Sail kernel relay", () => {
 			await expect(manager.execute("drop-transport")).rejects.toThrow();
 			await f.disconnect;
 			await expect(provisioner.ensure()).rejects.toThrow("transport terminated");
-			await expect(provisioner.kill()).rejects.toThrow("503");
+			await expect(provisioner.kill()).rejects.toThrow("PermissionDeniedError");
 			await expect(provisioner.ensure()).rejects.toThrow("transport terminated");
 			expect(f.commands).toHaveLength(1);
 			expect(f.frames.filter((frame) => frame.code === "drop-transport")).toHaveLength(1);
-			expect(f.cancellations).toEqual(["exec-1"]);
+			expect(f.cancellations).toEqual([f.commands[0].idempotency_key]);
 		} finally {
 			await provisioner.dispose().catch(() => undefined);
 			await f.close();

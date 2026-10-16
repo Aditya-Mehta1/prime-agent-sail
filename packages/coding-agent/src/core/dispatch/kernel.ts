@@ -32,11 +32,8 @@ export async function prepareDispatchPythonSkills(
 	if (packages.size > 0)
 		await new SailClient().run(
 			binding.boxId,
-			{
-				command: `uv pip install --python ${shellQuote(binding.guestPython)} -q ${[...packages].map(shellQuote).join(" ")}`,
-				cwd: binding.guestCwd,
-			},
-			signal,
+			`uv pip install --python ${shellQuote(binding.guestPython)} -q ${[...packages].map(shellQuote).join(" ")}`,
+			{ cwd: binding.guestCwd, signal },
 		);
 }
 
@@ -50,12 +47,8 @@ export function hasDispatchKernels(boxId: string): boolean {
 export function createDispatchKernelLauncher(
 	binding: DispatchBinding,
 	env: Record<string, string>,
-	client = new SailClient(),
 ): NonNullable<KernelManagerOptions["processLauncher"]> {
-	const states = new WeakMap<
-		ChildProcess,
-		{ id: Promise<string>; exited: boolean; release(): void; stop?: Promise<void> }
-	>();
+	const states = new WeakMap<ChildProcess, { done: Promise<void>; stop?: Promise<void> }>();
 	return {
 		spawn() {
 			const key = `${binding.boxId}:${binding.guestStateDir}`;
@@ -76,40 +69,34 @@ export function createDispatchKernelLauncher(
 				release();
 				throw error;
 			}
-			let resolveId!: (id: string) => void;
-			let rejectId!: (error: Error) => void;
-			const id = new Promise<string>((resolve, reject) => {
-				resolveId = resolve;
-				rejectId = reject;
+			let execId: string | undefined;
+			let resolveDone!: () => void;
+			let rejectDone!: (error: Error) => void;
+			const done = new Promise<void>((resolve, reject) => {
+				resolveDone = resolve;
+				rejectDone = reject;
 			});
-			void id.catch(() => undefined);
-			const state = { id, exited: false, release };
-			states.set(child, state);
-			const deadline = setTimeout(
-				() => rejectId(new Error("Sail kernel submission did not return an exec ID; termination is unverified")),
-				30_000,
-			);
-			deadline.unref();
+			void done.catch(() => undefined);
+			states.set(child, { done });
 			child.on("message", (value: unknown) => {
 				if (!value || typeof value !== "object") return;
-				const message = value as { type?: string; execId?: string };
-				if (message.type === "started" && message.execId) {
-					clearTimeout(deadline);
-					resolveId(message.execId);
-				}
+				const message = value as { type?: string; execId?: string; error?: string };
+				if (message.type === "started") execId = message.execId;
 				if (message.type === "remote-exit") {
-					state.exited = true;
 					release();
+					resolveDone();
 				}
+				if (message.type === "cleanup-error") rejectDone(new Error(message.error));
 			});
-			child.once("error", () => {
-				clearTimeout(deadline);
-				rejectId(new Error("Sail relay could not start"));
-			});
-			child.once("exit", () => {
-				clearTimeout(deadline);
-				rejectId(new Error("Sail relay exited before reporting an exec ID; termination is unverified"));
-			});
+			child.once("error", rejectDone);
+			// shortcut: a lost relay handle requires manual cleanup; add recovery only when needed.
+			child.once("exit", () =>
+				rejectDone(
+					new Error(
+						`Sail relay exited without confirmed cleanup; manually stop Sailbox ${binding.boxId} exec ${execId ?? "unknown"}`,
+					),
+				),
+			);
 			const config: SailRelayConfig = {
 				boxId: binding.boxId,
 				cwd: binding.guestCwd,
@@ -137,17 +124,24 @@ export function createDispatchKernelLauncher(
 				},
 			};
 			child.send?.(config, (error) => {
-				if (error) rejectId(error);
+				if (error) rejectDone(error);
 			});
 			return child;
 		},
 		stop(child) {
 			const state = states.get(child);
 			if (!state) return Promise.reject(new Error("Unknown Sail relay process"));
-			state.stop ??= (async () => {
-				if (!state.exited) await client.cancelExec(binding.boxId, await state.id, true);
-				state.release();
-			})();
+			state.stop ??= new Promise<void>((resolve, reject) => {
+				const deadline = setTimeout(
+					() => reject(new Error(`Sail kernel cleanup timed out; manually inspect Sailbox ${binding.boxId}`)),
+					30_000,
+				);
+				void state.done.then(resolve, reject).finally(() => clearTimeout(deadline));
+				if (child.connected)
+					child.send({ type: "stop" }, (error) => {
+						if (error) reject(error);
+					});
+			});
 			return state.stop;
 		},
 	};
