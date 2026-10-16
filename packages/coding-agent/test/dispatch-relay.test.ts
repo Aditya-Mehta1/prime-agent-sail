@@ -13,6 +13,7 @@ import { createDispatchKernelLauncher, hasDispatchKernels } from "../src/core/di
 import { SailClient } from "../src/core/dispatch/sail-client.js";
 import type { DispatchBinding } from "../src/core/dispatch/types.js";
 import { inheritDispatchWorkspace, terminateDispatchWorkspace } from "../src/core/dispatch/workspace.js";
+import { ReplKernelManager } from "../src/core/kernel/repl-manager.js";
 import { IpythonKernelProvisioner } from "../src/core/tools/ipython.js";
 import { createHarness } from "./suite/harness.js";
 
@@ -164,11 +165,9 @@ async function fixture() {
 	vi.stubEnv("SAIL_API_KEY", "fixture-key");
 	vi.stubEnv("GH_TOKEN", "fixture-gh-token");
 	vi.stubEnv("GITHUB_TOKEN", "fixture-github-token");
-	vi.stubEnv("PRIME_AGENT_SAILBOX_URL", `http://127.0.0.1:${address.port}/v1`);
+	vi.stubEnv("SAILBOX_API_URL", `http://127.0.0.1:${address.port}`);
 	const binding: DispatchBinding = {
-		version: 2,
 		ownsBox: true,
-		appId: "test-app",
 		boxId: `sb_${randomUUID()}`,
 		guestRepoDir: "/state/repo",
 		guestCwd: "/state/repo/subdir",
@@ -176,9 +175,6 @@ async function fixture() {
 		guestPython: "/state/venv/bin/python",
 		guestSkillsDir: "/state/skills",
 		hostResourceDir: dir,
-		sourceHead: "abc",
-		baselineCommit: "def",
-		initialBranch: "main",
 		inputs: {},
 	};
 	return {
@@ -191,6 +187,11 @@ async function fixture() {
 		boxActions,
 		authHeaders,
 		waiting,
+		writeOutput() {
+			for (const exec of executions.values())
+				for (const type of ["stdout", "stderr"])
+					event(exec, { type, seq: exec.sequence++, data: Buffer.from("stopping").toString("base64") });
+		},
 		finishWait() {
 			const finish = finishCancellation;
 			finishCancellation = () => {};
@@ -353,28 +354,37 @@ describe("Sail kernel relay", () => {
 		}
 	});
 
-	it("waits for verified cancellation before an explicit kernel replacement", async () => {
+	it("drains relay output until cancellation is verified before allowing replacement", async () => {
 		const f = await fixture();
-		const provisioner = new IpythonKernelProvisioner(f.dir, { dispatchBinding: f.binding });
+		const launcher = createDispatchKernelLauncher(f.binding, {});
+		const child = launcher.spawn();
+		const closed = once(child, "close");
+		const manager = new ReplKernelManager({ processLauncher: { ...launcher, spawn: () => child } });
+		const replacement = new ReplKernelManager({ processLauncher: launcher });
 		try {
-			await provisioner.ensure();
+			await manager.start();
+			const output = Promise.all(
+				[child.stdout!, child.stderr!].map((stream) => Promise.race([once(stream, "data"), once(stream, "close")])),
+			);
 			let killed = false;
-			const stopped = provisioner.kill().then(() => {
+			const stopped = manager.kill().then(() => {
 				killed = true;
 			});
 			await f.waiting;
 			expect(killed).toBe(false);
-			await expect(provisioner.ensure()).rejects.toThrow("transport terminated");
-			expect(f.commands).toHaveLength(1);
+			expect(() => launcher.spawn()).toThrow("termination is unverified");
+			f.writeOutput();
+			expect(await output).toEqual([[Buffer.from("stopping")], [Buffer.from("stopping")]]);
 			f.finishWait();
 			await stopped;
-			const replacement = await provisioner.ensure();
-			expect(replacement.isRunning).toBe(true);
-			expect(f.commands).toHaveLength(2);
+			expect(hasDispatchKernels(f.binding.boxId)).toBe(false);
+			await replacement.start();
 			expect(f.cancellations).toEqual([f.commands[0].idempotency_key]);
 		} finally {
 			f.finishWait();
-			await provisioner.dispose().catch(() => undefined);
+			await manager.kill().catch(() => undefined);
+			await replacement.shutdown();
+			await closed;
 			await f.close();
 		}
 	});

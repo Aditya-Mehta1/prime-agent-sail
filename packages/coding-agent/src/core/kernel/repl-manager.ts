@@ -1350,34 +1350,38 @@ export class ReplKernelManager {
 		this.child = undefined;
 		this.readyDeferred = undefined;
 		if (child) {
+			const releaseChild = () => {
+				child.stdin?.destroy();
+				child.stdout?.destroy();
+				// An exited child keeps its stderr: the post-exit drain owns it, and
+				// destroying here would drop its buffered last words. A still-alive
+				// child may ignore the kill signal and never emit 'exit', so that
+				// drain would never run — destroy now to bound the pipe's lifetime.
+				if (child.exitCode === null && child.signalCode === null) {
+					child.stderr?.destroy();
+				}
+				const pid = child.pid;
+				let signaled = false;
+				try {
+					signaled = child.kill(killSignal);
+				} catch {
+					// The kernel has already exited.
+				}
+				// Inactive only when the signal proved the pid still named our un-reaped child.
+				if (!this.options.processLauncher && pid !== undefined && signaled) recordOrphanProcessState(pid, false);
+				// A killed/crashed kernel cannot run its own shutdown hook, so the host
+				// reaps the bash() process groups it journaled under this kernel pid.
+				if (!this.options.processLauncher && pid !== undefined) reapKernelOrphanProcesses(pid);
+			};
 			if (this.options.processLauncher) {
-				const cleanup = this.options.processLauncher.stop(child).finally(() => child.kill(killSignal));
+				const cleanup = this.options.processLauncher.stop(child).finally(releaseChild);
 				this.processCleanup = cleanup;
 				void cleanup.catch((error: unknown) =>
 					this.appendKernelDiagnostic(`remote cleanup failed: ${errorMessage(error)}`),
 				);
+			} else {
+				releaseChild();
 			}
-			child.stdin?.destroy();
-			child.stdout?.destroy();
-			// An exited child keeps its stderr: the post-exit drain owns it, and
-			// destroying here would drop its buffered last words. A still-alive
-			// child may ignore the kill signal and never emit 'exit', so that
-			// drain would never run — destroy now to bound the pipe's lifetime.
-			if (child.exitCode === null && child.signalCode === null) {
-				child.stderr?.destroy();
-			}
-			const pid = child.pid;
-			let signaled = false;
-			try {
-				if (!this.options.processLauncher) signaled = child.kill(killSignal);
-			} catch {
-				// The kernel has already exited.
-			}
-			// Inactive only when the signal proved the pid still named our un-reaped child.
-			if (!this.options.processLauncher && pid !== undefined && signaled) recordOrphanProcessState(pid, false);
-			// A killed/crashed kernel cannot run its own shutdown hook, so the host
-			// reaps the bash() process groups it journaled under this kernel pid.
-			if (!this.options.processLauncher && pid !== undefined) reapKernelOrphanProcesses(pid);
 		}
 		this.startPromise = undefined;
 	}

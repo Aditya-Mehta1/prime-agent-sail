@@ -9,9 +9,7 @@ import { createHarness } from "./harness.js";
 const provider = "faux-eng-subagent-default-model";
 
 const remoteBinding: DispatchBinding = {
-	version: 2,
 	ownsBox: true,
-	appId: "app",
 	boxId: "box",
 	guestRepoDir: "/repo",
 	guestCwd: "/repo",
@@ -19,9 +17,6 @@ const remoteBinding: DispatchBinding = {
 	guestPython: "/python",
 	guestSkillsDir: "/skills",
 	hostResourceDir: "/captured",
-	sourceHead: "head",
-	baselineCommit: "baseline",
-	initialBranch: "main",
 	inputs: {},
 };
 

@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -26,7 +26,6 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 interface CapturedProject {
-	sourceHead: string;
 	cwdRelative: string;
 	origin: string;
 }
@@ -47,7 +46,6 @@ function safeOrigin(value: string): string {
 /** Capture live files without changing the user's Git index or copying .git config/hooks. */
 export async function captureLocalProject(sourceCwd: string, destination: string): Promise<CapturedProject> {
 	const sourceRoot = (await git(sourceCwd, ["rev-parse", "--show-toplevel"])).trim();
-	const sourceHead = (await git(sourceRoot, ["rev-parse", "HEAD"])).trim();
 	const entries = await git(sourceRoot, ["ls-files", "--stage"]);
 	if (/^160000 /m.test(entries))
 		throw new Error("Dispatch MVP does not copy Git submodules; use a plain working tree");
@@ -73,7 +71,7 @@ export async function captureLocalProject(sourceCwd: string, destination: string
 	}
 	await git(sourceRoot, ["bundle", "create", join(destination, "base.bundle"), "HEAD"]);
 	const origin = safeOrigin(await git(sourceRoot, ["remote", "get-url", "origin"]).catch(() => ""));
-	return { sourceHead, cwdRelative, origin };
+	return { cwdRelative, origin };
 }
 
 function copyFilter(source: string): boolean {
@@ -122,7 +120,6 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 	const client = new SailClient();
 	const staging = await mkdtemp(join(tmpdir(), "prime-dispatch-"));
 	let binding: DispatchBinding | undefined;
-	let success = false;
 	try {
 		options.signal?.throwIfAborted();
 		const project = join(staging, "project");
@@ -139,9 +136,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		// Do not abort the create response: retain its ID and terminate a late allocation.
 		const box = await client.createBox(app.id, `prime-${basename(options.sessionDir)}`);
 		binding = {
-			version: 2,
 			ownsBox: true,
-			appId: app.id,
 			boxId: box.sailboxId,
 			guestRepoDir: GUEST_REPO,
 			guestCwd: `${GUEST_REPO}${capture.cwdRelative && capture.cwdRelative !== "." ? `/${capture.cwdRelative.split(sep).join("/")}` : ""}`,
@@ -149,30 +144,19 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 			guestPython: `${GUEST_INSTALL}/venv/bin/python`,
 			guestSkillsDir: `${GUEST_INSTALL}/skills`,
 			hostResourceDir: resolve(options.sourceCwd),
-			sourceHead: capture.sourceHead,
-			baselineCommit: "",
-			initialBranch: branch,
 			inputs,
 		};
 		await mkdir(options.sessionDir, { recursive: true });
 		await writeFile(join(options.sessionDir, "dispatch.json"), JSON.stringify(binding, null, 2));
 		options.signal?.throwIfAborted();
 		if (box.status !== "running") throw new Error(`Sailbox setup failed (${box.status}): ${box.sailboxId}`);
-		const archive = join(staging, "payload.tar.gz");
-		await executeFile(
-			"tar",
-			["--no-xattrs", "-czf", archive, "-C", staging, "project", "runtime", "skills", "inputs"],
-			{
-				env: { ...process.env, COPYFILE_DISABLE: "1" },
-			},
-		);
-		await client.writeFile(box.sailboxId, "/tmp/prime-dispatch.tar.gz", await readFile(archive), options.signal);
+		await (await client.sdk).uploadDir(box.sailboxId, { localDir: staging, guestDir: GUEST_INSTALL });
+		options.signal?.throwIfAborted();
 		const skillPackages = (await readdir(join(staging, "skills")))
 			.filter((name) => existsSync(join(staging, "skills", name, "pyproject.toml")))
 			.map((name) => `${GUEST_INSTALL}/skills/${name}`);
 		const bootstrap = `set -eu
-mkdir -p ${GUEST_INSTALL} ${GUEST_STATE} /workspace
-tar --no-same-owner -xzf /tmp/prime-dispatch.tar.gz -C ${GUEST_INSTALL}
+mkdir -p ${GUEST_STATE} /workspace
 mv ${GUEST_INSTALL}/inputs /workspace/inputs
 mkdir -p ${GUEST_REPO}
 git -C ${GUEST_REPO} init -q
@@ -188,20 +172,16 @@ ${capture.origin ? `git -C ${GUEST_REPO} remote add origin ${shellQuote(capture.
 git -C ${GUEST_REPO} config credential.https://github.com.helper '!gh auth git-credential'
 uv venv --python 3.11 ${GUEST_INSTALL}/venv
 uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
-rm -rf ${GUEST_INSTALL}/project /tmp/prime-dispatch.tar.gz
-git -C ${GUEST_REPO} rev-parse HEAD
+rm -rf ${GUEST_INSTALL}/project
 `;
-		const result = await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
-		binding.baselineCommit = result.stdout.trim().split("\n").at(-1) ?? "";
-		if (!/^[a-f0-9]{40,64}$/.test(binding.baselineCommit))
-			throw new Error("Sailbox bootstrap did not produce a baseline commit");
-		await writeFile(join(options.sessionDir, "dispatch.json"), JSON.stringify(binding, null, 2));
+		await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
 		options.signal?.throwIfAborted();
-		success = true;
 		return binding;
+	} catch (error) {
+		if (binding) await terminateDispatchWorkspace(binding);
+		throw error;
 	} finally {
-		await rm(staging, { recursive: true, force: true });
-		if (!success && binding) await terminateDispatchWorkspace(binding);
+		await rm(staging, { recursive: true, force: true }).catch(() => {});
 	}
 }
 
@@ -220,7 +200,7 @@ export function loadDispatchBinding(sessionDir: string): DispatchBinding | undef
 	const path = join(sessionDir, "dispatch.json");
 	if (!existsSync(path)) return undefined;
 	const binding = JSON.parse(readFileSync(path, "utf8")) as DispatchBinding;
-	if (binding.version !== 2 || typeof binding.ownsBox !== "boolean" || !binding.boxId || !binding.guestCwd)
+	if (typeof binding.ownsBox !== "boolean" || !binding.boxId || !binding.guestCwd)
 		throw new Error(`Invalid dispatch binding: ${path}`);
 	return binding;
 }
