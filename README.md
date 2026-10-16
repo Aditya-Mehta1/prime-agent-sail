@@ -66,4 +66,4 @@ cd /path/to/project
 prime-agent-sail
 ```
 
-Needs macOS or Linux, Node 22.8+, and Sail API key
+Needs macOS or Linux, Node 22.8+, Sail API key, and GitHub CLI logged in (`gh auth login`)
