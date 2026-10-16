@@ -1020,7 +1020,7 @@ describe("daemon worker supervisor monitoring", () => {
 		type ShutdownHarness = {
 			socketLease?: { release(): Promise<void> };
 			ownership?: { release(): Promise<void> };
-			shutdown(exitCode: number, stopWorkers: boolean, relaunch?: boolean, forceWorkers?: boolean): Promise<never>;
+			shutdown(exitCode: number): Promise<never>;
 		};
 		const supervisor = Object.assign(Object.create(DaemonSupervisor.prototype), {
 			shuttingDown: false,
@@ -1036,7 +1036,7 @@ describe("daemon worker supervisor monitoring", () => {
 		}) as ShutdownHarness;
 
 		try {
-			await expect(supervisor.shutdown(42, false)).rejects.toThrow("exit 42");
+			await expect(supervisor.shutdown(42)).rejects.toThrow("exit 42");
 			expect(cleanupSocket).toHaveBeenCalledOnce();
 			expect(leaseRelease).toHaveBeenCalledOnce();
 			expect(ownershipRelease).toHaveBeenCalledOnce();
@@ -1062,6 +1062,7 @@ describe("daemon worker supervisor monitoring", () => {
 				rootActiveSessionId: "active-1",
 				stopRequestedAt: new Date().toISOString(),
 				archiveOnStop: true,
+				createCommand: {},
 			},
 			client: undefined,
 			summaries: new Map(),
@@ -1089,19 +1090,25 @@ describe("daemon worker supervisor monitoring", () => {
 			clients: new Set(),
 			persistWorkerStopTombstone: vi.fn(),
 			hasPersistedWorkerDescriptors: vi.fn(() => true),
+			roster: () => new Map(),
+			updateRestartPhase: "prepared",
 			catalog: { stop: catalogStop },
 			cleanupSocket: vi.fn(),
 			snapshotCacheRoot: join(root, "cache"),
 			log,
 		}) as {
-			shutdown(exitCode: number, stopWorkers: boolean, relaunch?: boolean, forceWorkers?: boolean): Promise<never>;
+			prepareExplicitShutdown(forceWorkers: boolean): Promise<void>;
+			finishShutdown(exitCode: number): Promise<never>;
 		};
 
 		try {
-			const shutdown = supervisor.shutdown(0, true, false, true).then(
-				() => undefined,
-				(error: unknown) => error,
-			);
+			const shutdown = supervisor
+				.prepareExplicitShutdown(true)
+				.then(() => supervisor.finishShutdown(0))
+				.then(
+					() => undefined,
+					(error: unknown) => error,
+				);
 			await vi.advanceTimersByTimeAsync(2000);
 			await expect(shutdown).resolves.toEqual(new Error("exit 0"));
 

@@ -1,6 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type { Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { Client } from "@sailresearch/sdk";
 import { describe, expect, it, vi } from "vitest";
+import { AuthStorage } from "../src/core/auth-storage.js";
+import { getSessionArtifactPathForFile } from "../src/core/session-manager.js";
 import type { DaemonSocketClient } from "../src/modes/daemon/active-session-state.js";
 import {
 	createDaemonCommandEnvelope,
@@ -97,6 +103,67 @@ function createHarness(
 }
 
 describe("daemon supervisor prompt admission ownership", () => {
+	it.each(["success", "failure", "update"])("reports shutdown after Sail cleanup: %s", async (outcome) => {
+		const fail = outcome === "failure";
+		const root = mkdtempSync(join(tmpdir(), "prime-shutdown-sail-"));
+		const paths = [join(root, "resident.jsonl"), join(root, "passive.jsonl")];
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const exited = deferred<void>();
+		const terminated: string[] = [];
+		const responses: DaemonResponse[] = [];
+		const auth = vi.spyOn(AuthStorage.prototype, "getApiKey").mockResolvedValue("test-sail-key");
+		const terminate = vi.spyOn(Client.prototype, "terminateSailbox").mockImplementation(async (boxId) => {
+			entered.resolve();
+			await release.promise;
+			if (fail) throw new Error("Sail cleanup failed");
+			terminated.push(boxId);
+		});
+		try {
+			for (const [index, path] of paths.entries()) {
+				const directory = getSessionArtifactPathForFile(path);
+				mkdirSync(directory, { recursive: true });
+				writeFileSync(
+					join(directory, "dispatch.json"),
+					JSON.stringify({ ownsBox: true, boxId: `box-${index}`, guestCwd: "/workspace" }),
+				);
+			}
+			const supervisor = Object.assign(
+				createHarness({ updateRestartPhase: outcome === "update" ? "prepared" : undefined }),
+				{
+					defaultSessionConfig: { sessionDir: root },
+					workers: new Map([["resident", { descriptor: { sessionFile: paths[0], createCommand: {} } }]]),
+					catalog: { list: async () => [{ path: paths[1] }] },
+					roster: () => ({ values: () => [] }),
+					stopWorker: async () => undefined,
+					hasPersistedWorkerDescriptors: () => true,
+					scheduleIdleEvictionSweep: () => undefined,
+					scheduleScheduledSessionWakeRecompute: () => undefined,
+					finishShutdown: async () => exited.resolve(),
+					write: (_owner: DaemonSocketClient, response: DaemonResponse) => responses.push(response),
+				},
+			);
+			const pending = supervisor.handleLine(client("owner"), commandLine({ id: "shutdown", type: "shutdown" }));
+			if (outcome !== "update") {
+				await entered.promise;
+				expect(responses).toEqual([]);
+			}
+			release.resolve();
+			await pending;
+			expect(responses.at(-1)).toMatchObject({ command: "shutdown", success: !fail });
+			if (fail) expect(responses.at(-1)).toMatchObject({ error: "Sail cleanup failed" });
+			else {
+				await exited.promise;
+				expect(terminated.sort()).toEqual(outcome === "update" ? [] : ["box-0", "box-1"]);
+			}
+		} finally {
+			release.resolve();
+			terminate.mockRestore();
+			auth.mockRestore();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("registers a prompt synchronously before readiness and ownership awaits", async () => {
 		const ready = deferred<void>();
 		const ownership = deferred<void>();

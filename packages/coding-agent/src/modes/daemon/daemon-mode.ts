@@ -557,7 +557,6 @@ export class AgentDaemon {
 			promise: Promise<void>;
 			reason: DaemonSessionClosedReason;
 			descendants: Set<ActiveSessionState>;
-			passiveDispatchBindings: DispatchBinding[];
 			reasonUpgrade?: Promise<void>;
 		}
 	>();
@@ -1253,9 +1252,7 @@ export class AgentDaemon {
 				sessionFile: parentFile,
 			});
 		} else if (edges.length > 0) {
-			// Only tombstoned edges: the tombstones are already durable, nothing
-			// to re-append. A prior deletion may have crashed before its artifact
-			// sweep. Restore the display tombstone before sweeping artifacts.
+			// Restore the display tombstone before the caller removes artifacts.
 			for (const tombstoned of edges) {
 				try {
 					const currentDisplay = await readRlmSubagentDisplayEntry(dirname(tombstoned.child));
@@ -1274,10 +1271,9 @@ export class AgentDaemon {
 					}
 				} catch {
 					// Best-effort: the ledger tombstone is the authority; the display
-					// file is display-grade and the sweep below will remove artifacts.
+					// file is display-grade; the caller removes artifacts after disposal.
 					this.log(`failed to reconcile display entry for tombstoned RLM subagent ${childId}`);
 				}
-				await this.deleteRlmSubagentArtifacts(childId, tombstoned.child);
 			}
 			return;
 		} else {
@@ -1340,20 +1336,6 @@ export class AgentDaemon {
 				basename(entry.sessionFile, ".jsonl"),
 			);
 			this.scheduleRosterFlush();
-		}
-		// Deletion boundary: transcript + display tombstone are the durable
-		// record and stay; the nested artifact dir is a runtime cache and goes.
-		await this.deleteRlmSubagentArtifacts(childId, entry.sessionFile);
-	}
-
-	/** Best-effort artifact-dir removal: cache cleanup must never fail a deletion. */
-	private async deleteRlmSubagentArtifacts(childId: string, childSessionFile: string): Promise<void> {
-		try {
-			await deleteSessionArtifacts(childSessionFile);
-		} catch (error) {
-			this.log(
-				`failed to remove artifact dir for deleted RLM subagent ${childId}: ${error instanceof Error ? error.message : String(error)}`,
-			);
 		}
 	}
 
@@ -2730,12 +2712,11 @@ export class AgentDaemon {
 						await runtime.session.disposeAsync(disposal);
 					}
 				} finally {
-					// Sweep even when teardown throws (see deleteRlmSubagentRuntime);
-					// never throws, so it cannot mask a teardown error.
+					// Disposal may flush a final snapshot, so delete its state afterward.
 					if (status === "cancelled" && deletionError === undefined) {
 						const childSessionFile = runtime.session?.sessionFile;
 						if (childSessionFile) {
-							await this.deleteRlmSubagentArtifacts(options.id, childSessionFile);
+							await deleteSessionArtifacts(childSessionFile);
 						}
 					}
 				}
@@ -2778,13 +2759,6 @@ export class AgentDaemon {
 						: undefined;
 				const childSessionFile =
 					persisted?.sessionFile ?? state?.runtime.session.sessionFile ?? legacyFallback?.sessionFile;
-				for (const binding of await this.passiveDispatchBindingsFor(childSessionFile)) {
-					await terminateDispatchWorkspace(binding);
-				}
-				if (!state && childSessionFile) {
-					const binding = loadDispatchBinding(dirname(childSessionFile));
-					if (binding) await terminateDispatchWorkspace(binding);
-				}
 				// Persist the deletion boundary before tearing down the runtime.
 				await this.recordRlmSubagentDeletion(parentState, childId);
 				const staleSession = state && session && state.runtime.session !== session ? session : undefined;
@@ -2799,12 +2773,7 @@ export class AgentDaemon {
 						await staleSession?.disposeAsync({ kernelSnapshot: false });
 					}
 				} finally {
-					// Runs even when teardown throws: the jobs-cancel rewrite and the
-					// kernel dispose's final snapshot flush may have already happened,
-					// resurrecting the artifact dir swept in recordRlmSubagentDeletion.
-					// A killed close can join a passivation close that already skipped
-					// killed cleanup. Neither step may throw here: a jobs-store error
-					// would mask the teardown error and skip the sweep.
+					// A deletion can join passivation; wait for its final snapshot before removing state.
 					if (childSessionFile) {
 						try {
 							this.cancelScheduledJobsForSessionFile(childSessionFile);
@@ -2813,7 +2782,7 @@ export class AgentDaemon {
 								`failed to cancel scheduled jobs for deleted RLM subagent ${childId}: ${error instanceof Error ? error.message : String(error)}`,
 							);
 						}
-						await this.deleteRlmSubagentArtifacts(childId, childSessionFile);
+						await deleteSessionArtifacts(childSessionFile);
 					}
 				}
 			},
@@ -6931,13 +6900,7 @@ export class AgentDaemon {
 			const reasonUpgrade = (existingClose.reasonUpgrade ?? Promise.resolve()).then(async () => {
 				if (!this.isStrongerCloseReason(requestedReason, existingClose.reason)) return;
 				try {
-					await this.applyReasonUpgrade(
-						state,
-						existingClose.descendants,
-						existingClose.reason,
-						requestedReason,
-						existingClose.passiveDispatchBindings,
-					);
+					await this.applyReasonUpgrade(state, existingClose.descendants, existingClose.reason, requestedReason);
 				} finally {
 					existingClose.reason = requestedReason;
 				}
@@ -6953,12 +6916,10 @@ export class AgentDaemon {
 			return;
 		}
 		const descendants = new Set<ActiveSessionState>();
-		const passiveDispatchBindings: DispatchBinding[] = [];
-		const closePromise = Promise.resolve().then(async () => {
-			passiveDispatchBindings.push(...(await this.passiveDispatchBindingsFor(state.runtime.session.sessionFile)));
-			await this.closeSessionOnce(state, reason, waitForAbort, cascadeChildren, descendants, disposal);
-		});
-		const close = { promise: closePromise, reason, descendants, passiveDispatchBindings };
+		const closePromise = Promise.resolve().then(() =>
+			this.closeSessionOnce(state, reason, waitForAbort, cascadeChildren, descendants, disposal),
+		);
+		const close = { promise: closePromise, reason, descendants };
 		this.closingSessions.set(state.activeSessionId, close);
 		try {
 			await closePromise;
@@ -6986,29 +6947,10 @@ export class AgentDaemon {
 		descendants: ReadonlySet<ActiveSessionState>,
 		from: DaemonSessionClosedReason,
 		to: DaemonSessionClosedReason,
-		passiveBindings: readonly DispatchBinding[],
 	): Promise<void> {
 		let persistError: unknown;
 		let persistenceFailed = false;
-		if (to === "killed" || to === "replaced") {
-			for (const binding of passiveBindings) {
-				try {
-					await terminateDispatchWorkspace(binding);
-				} catch (error) {
-					persistError ??= error;
-					persistenceFailed = true;
-				}
-			}
-		}
 		for (const target of [state, ...descendants]) {
-			try {
-				if ((to === "killed" || to === "replaced") && target.runtime.session.dispatchBinding) {
-					await terminateDispatchWorkspace(target.runtime.session.dispatchBinding);
-				}
-			} catch (error) {
-				persistError ??= error;
-				persistenceFailed = true;
-			}
 			try {
 				if (to === "killed") this.cancelScheduledJobsForSession(target);
 			} catch (error) {
@@ -7134,25 +7076,6 @@ export class AgentDaemon {
 		}
 	}
 
-	private async passiveDispatchBindingsFor(sessionFile: string | undefined): Promise<DispatchBinding[]> {
-		if (!sessionFile) return [];
-		const parentPath = canonicalSessionPath(sessionFile);
-		const bindings: DispatchBinding[] = [];
-		for (const passive of await this.listPassiveRlmSubagents()) {
-			if (
-				!passive.chain.some(
-					(entry) =>
-						canonicalSessionPath(entry.sessionFile) === parentPath ||
-						(entry.parentSessionFile && canonicalSessionPath(entry.parentSessionFile) === parentPath),
-				)
-			)
-				continue;
-			const binding = loadDispatchBinding(passive.entry.sessionDir);
-			if (binding) bindings.push(binding);
-		}
-		return bindings;
-	}
-
 	private async closeChildSessions(
 		parentState: ActiveSessionState,
 		reason: DaemonSessionClosedReason,
@@ -7161,15 +7084,6 @@ export class AgentDaemon {
 		disposal?: AgentSessionRuntimeDisposeOptions,
 	): Promise<unknown> {
 		let cascadeError: unknown;
-		if (reason === "killed" || reason === "replaced") {
-			for (const binding of await this.passiveDispatchBindingsFor(parentState.runtime.session.sessionFile)) {
-				try {
-					await terminateDispatchWorkspace(binding);
-				} catch (error) {
-					cascadeError ??= error;
-				}
-			}
-		}
 		for (const childState of getChildActiveSessionStates(this.sessions, parentState)) {
 			descendants.add(childState);
 			try {

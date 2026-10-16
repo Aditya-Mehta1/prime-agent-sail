@@ -48,6 +48,7 @@ import {
 	type IdleEvictionMinutes,
 	type WorkerEvictionSnapshot,
 } from "../../core/session-action-store.js";
+import { cleanupSessionDispatchWorkspaces } from "../../core/session-file-actions.js";
 import { canonicalSessionPath, getProcessStartId, SessionAlreadyActiveError } from "../../core/session-lease.js";
 import { getSessionArtifactPathForFile, readSessionInfo, type SessionInfo } from "../../core/session-manager.js";
 import { looksLikeSessionPath } from "../../core/session-resolver.js";
@@ -2383,10 +2384,11 @@ export class DaemonSupervisor {
 				return success(command.id, command.type, summary ? this.publicSummary(worker, summary) : undefined);
 			}
 			case "restart":
-				setImmediate(() => void this.shutdown(0, false, true, false, "update"));
+				setImmediate(() => void this.shutdown(0, true, "update"));
 				return success(command.id, command.type);
 			case "shutdown":
-				setImmediate(() => void this.shutdown(0, true, false, command.force === true, "shutdown"));
+				await this.prepareExplicitShutdown(command.force === true);
+				setImmediate(() => void this.finishShutdown(0, false, "shutdown"));
 				return success(command.id, "shutdown");
 			case "prepare_update_restart": {
 				const manifest = await this.prepareUpdateRestart();
@@ -7128,7 +7130,7 @@ export class DaemonSupervisor {
 			signals.push("SIGHUP");
 		}
 		for (const signal of signals) {
-			const handler = () => void this.shutdown(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143, false);
+			const handler = () => void this.shutdown(signal === "SIGINT" ? 130 : signal === "SIGHUP" ? 129 : 143);
 			process.on(signal, handler);
 			this.signalCleanupHandlers.push(() => process.off(signal, handler));
 		}
@@ -7291,30 +7293,16 @@ export class DaemonSupervisor {
 		}
 	}
 
-	private async shutdown(
-		exitCode: number,
-		stopWorkers: boolean,
-		relaunch = false,
-		forceWorkers = false,
-		closingReason?: DaemonClosingReason,
-	): Promise<never> {
-		if (this.shuttingDown) {
-			process.exit(exitCode);
-		}
+	private async prepareExplicitShutdown(forceWorkers: boolean): Promise<void> {
 		this.shuttingDown = true;
-		this.clearIdleEvictionTimer();
-		this.clearScheduledWakeTimer();
-		this.clearRosterWatchdogTimer();
-		await this.idleEvictionSweep?.catch(() => undefined);
-		if (closingReason) {
-			for (const client of this.clients) {
-				this.write(client, { type: "daemon_closing", reason: closingReason });
-			}
-		}
-		for (const cleanup of this.signalCleanupHandlers) {
-			cleanup();
-		}
-		if (stopWorkers) {
+		try {
+			await this.idleEvictionSweep?.catch(() => undefined);
+			const sessionPaths = [
+				...[...this.workers.values()].flatMap((worker) => [
+					worker.descriptor.sessionFile ?? worker.descriptor.createCommand.sessionPath,
+				]),
+				...[...this.roster().values()].map((entry) => entry.summary.sessionFile),
+			].filter((path): path is string => path !== undefined);
 			await Promise.all(
 				[...this.workers.values()].map(async (worker) => {
 					try {
@@ -7332,12 +7320,49 @@ export class DaemonSupervisor {
 			if (!this.hasPersistedWorkerDescriptors()) {
 				rmSync(this.supervisorConfigPath, { force: true });
 			}
-		} else {
-			for (const worker of this.workers.values()) {
-				worker.intentionalStop = true;
-				worker.client?.close();
-				worker.client = undefined;
+			if (this.updateRestartPhase === "prepared") return;
+			const saved = await this.catalog.list(
+				undefined,
+				this.defaultSessionConfig.sessionDir ?? getSessionsDir(this.defaultSessionConfig.agentDir),
+			);
+			await cleanupSessionDispatchWorkspaces([...sessionPaths, ...saved.map((session) => session.path)], true);
+		} catch (error) {
+			this.shuttingDown = false;
+			this.scheduleIdleEvictionSweep();
+			this.scheduleScheduledSessionWakeRecompute();
+			throw error;
+		}
+	}
+
+	private async shutdown(exitCode: number, relaunch = false, closingReason?: DaemonClosingReason): Promise<never> {
+		if (this.shuttingDown) {
+			process.exit(exitCode);
+		}
+		this.shuttingDown = true;
+		return this.finishShutdown(exitCode, relaunch, closingReason);
+	}
+
+	private async finishShutdown(
+		exitCode: number,
+		relaunch = false,
+		closingReason?: DaemonClosingReason,
+	): Promise<never> {
+		this.clearIdleEvictionTimer();
+		this.clearScheduledWakeTimer();
+		this.clearRosterWatchdogTimer();
+		await this.idleEvictionSweep?.catch(() => undefined);
+		for (const worker of this.workers.values()) {
+			worker.intentionalStop = true;
+			worker.client?.close();
+			worker.client = undefined;
+		}
+		if (closingReason) {
+			for (const client of this.clients) {
+				this.write(client, { type: "daemon_closing", reason: closingReason });
 			}
+		}
+		for (const cleanup of this.signalCleanupHandlers) {
+			cleanup();
 		}
 		await this.catalog.stop();
 		for (const client of this.clients) {
