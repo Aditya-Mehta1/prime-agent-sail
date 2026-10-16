@@ -130,6 +130,7 @@ export function createDispatchKernelLauncher(
 							].includes(key),
 						),
 					),
+					VIRTUAL_ENV: posix.dirname(posix.dirname(binding.guestPython)),
 					RLM_SESSION_DIR: binding.guestStateDir,
 					RLM_HARNESS_STATE_DIR: `${binding.guestStateDir}/harness`,
 					RLM_GLOBAL_HARNESS_STATE_DIR: `${binding.guestStateDir}/global-harness`,
