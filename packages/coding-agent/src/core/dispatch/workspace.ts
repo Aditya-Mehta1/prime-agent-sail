@@ -120,7 +120,6 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 	const client = new SailClient();
 	const staging = await mkdtemp(join(tmpdir(), "prime-dispatch-"));
 	let binding: DispatchBinding | undefined;
-	let success = false;
 	try {
 		options.signal?.throwIfAborted();
 		const project = join(staging, "project");
@@ -178,11 +177,12 @@ rm -rf ${GUEST_INSTALL}/project
 `;
 		await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
 		options.signal?.throwIfAborted();
-		success = true;
 		return binding;
+	} catch (error) {
+		if (binding) await terminateDispatchWorkspace(binding);
+		throw error;
 	} finally {
 		await rm(staging, { recursive: true, force: true }).catch(() => {});
-		if (!success && binding) await terminateDispatchWorkspace(binding);
 	}
 }
 
