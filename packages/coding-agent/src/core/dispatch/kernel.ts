@@ -101,8 +101,6 @@ export function createDispatchKernelLauncher(
 				cwd: binding.guestCwd,
 				command: `exec ${shellQuote(binding.guestPython)} -u -m rlm.repl`,
 				env: {
-					...(process.env.GH_TOKEN ? { GH_TOKEN: process.env.GH_TOKEN } : {}),
-					...(process.env.GITHUB_TOKEN ? { GITHUB_TOKEN: process.env.GITHUB_TOKEN } : {}),
 					...Object.fromEntries(
 						Object.entries(env).filter(([key]) =>
 							[
@@ -110,12 +108,11 @@ export function createDispatchKernelLauncher(
 								"RLM_MAX_DEPTH",
 								"PRIME_AGENT_BASH_SHELL",
 								"PRIME_AGENT_BASH_COMMAND_PREFIX",
-								"GH_TOKEN",
-								"GITHUB_TOKEN",
 								"SERPER_API_KEY",
 							].includes(key),
 						),
 					),
+					GH_HOST: "github.com",
 					VIRTUAL_ENV: posix.dirname(posix.dirname(binding.guestPython)),
 					RLM_SESSION_DIR: binding.guestStateDir,
 					RLM_HARNESS_STATE_DIR: `${binding.guestStateDir}/harness`,
