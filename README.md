@@ -46,8 +46,7 @@ flowchart LR
 
 ```text
 /workspace/
-├── repo/     tracked files (incl uncommitted edits) + untracked files that aren't gitignored,
-│             + HEAD's history (no .git config or hooks), on branch dispatch/<uuid>
+├── repo/     cloned from main
 └── inputs/
     ├── prime_project/   PROJECT.md + project/ - a snapshot of the foreground's project notes
     └── <name>/          anything passed as inputs={'<name>': 'path'}
@@ -66,4 +65,4 @@ cd /path/to/project
 prime-agent-sail
 ```
 
-Needs macOS or Linux, Node 22.8+, Sail API key, and GitHub CLI logged in (`gh auth login`)
+Needs macOS or Linux, Node 22.8+, and Sail API key

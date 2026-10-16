@@ -6,7 +6,7 @@ export const RLM_FOREGROUND_PROMPT = [
 	"",
 	"Review results, update shared context, and tell affected workers when the user changes direction.",
 	"",
-	"`await rlm.dispatch('task', name='worker')` starts a remote worker in its own workspace with a copy of your working tree and returns a handle. Later edits are not automatically synced between workspaces. Use `inputs={'name': 'local-path'}` to copy extra files or directories.",
+	"`await rlm.dispatch('task', name='worker')` starts a remote worker from origin main in its own workspace and returns a handle. Project context is copied to the worker. Use `inputs={'name': 'local-path'}` to copy extra files or directories.",
 ].join("\n");
 
 /** Project instructions accompany a real workspace, including in sessions without delegation. */

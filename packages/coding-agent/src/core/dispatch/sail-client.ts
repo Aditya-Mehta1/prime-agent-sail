@@ -19,7 +19,9 @@ export class SailClient {
 	async createBox(appId: string, name: string) {
 		const sdk = await this.sdk;
 		const { stdout } = await executeFile("gh", ["auth", "token", "--hostname", "github.com"]);
-		await sdk.setSecret(GITHUB_AUTH, `Basic ${Buffer.from(`x-access-token:${stdout.trim()}`).toString("base64")}`);
+		const token = stdout.trim();
+		if (!token) throw new Error("Dispatch requires gh auth login --hostname github.com");
+		await sdk.setSecret(GITHUB_AUTH, `Basic ${Buffer.from(`x-access-token:${token}`).toString("base64")}`);
 		const policies = await EgressPolicy.list({ client: sdk, search: GITHUB_AUTH });
 		const headers = { authorization: `\${secrets.${GITHUB_AUTH}}` };
 		const policy =

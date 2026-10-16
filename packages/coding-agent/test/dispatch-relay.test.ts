@@ -237,7 +237,7 @@ describe("Sail kernel relay", () => {
 		}
 	});
 
-	it("runs the unchanged REPL protocol through a real relay, including host replies and guest snapshots", async () => {
+	it("runs the REPL with the dispatch venv, host replies and snapshots (#2)", async () => {
 		const f = await fixture();
 		const hostRequests: Record<string, unknown>[] = [];
 		const provisioner = new IpythonKernelProvisioner(f.dir, {
@@ -286,6 +286,7 @@ describe("Sail kernel relay", () => {
 			expect(f.commands[1].env).not.toHaveProperty("GH_TOKEN");
 			expect(f.commands[1].env).not.toHaveProperty("GITHUB_TOKEN");
 			expect(f.commands[1].env).not.toHaveProperty("SAIL_API_KEY");
+			expect(f.commands[1].env).toHaveProperty("VIRTUAL_ENV", "/state/venv");
 			expect(f.commands[1].env).not.toHaveProperty("PRIME_AGENT_KERNEL_OWNER_PID");
 			expect(f.frames).toEqual(
 				expect.arrayContaining([
