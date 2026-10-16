@@ -164,7 +164,7 @@ async function fixture() {
 	vi.stubEnv("SAIL_API_KEY", "fixture-key");
 	vi.stubEnv("GH_TOKEN", "fixture-gh-token");
 	vi.stubEnv("GITHUB_TOKEN", "fixture-github-token");
-	vi.stubEnv("PRIME_AGENT_SAILBOX_URL", `http://127.0.0.1:${address.port}/v1`);
+	vi.stubEnv("SAILBOX_API_URL", `http://127.0.0.1:${address.port}`);
 	const binding: DispatchBinding = {
 		version: 2,
 		ownsBox: true,
