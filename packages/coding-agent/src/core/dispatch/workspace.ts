@@ -26,7 +26,6 @@ async function git(cwd: string, args: string[]): Promise<string> {
 }
 
 interface CapturedProject {
-	sourceHead: string;
 	cwdRelative: string;
 	origin: string;
 }
@@ -47,7 +46,6 @@ function safeOrigin(value: string): string {
 /** Capture live files without changing the user's Git index or copying .git config/hooks. */
 export async function captureLocalProject(sourceCwd: string, destination: string): Promise<CapturedProject> {
 	const sourceRoot = (await git(sourceCwd, ["rev-parse", "--show-toplevel"])).trim();
-	const sourceHead = (await git(sourceRoot, ["rev-parse", "HEAD"])).trim();
 	const entries = await git(sourceRoot, ["ls-files", "--stage"]);
 	if (/^160000 /m.test(entries))
 		throw new Error("Dispatch MVP does not copy Git submodules; use a plain working tree");
@@ -73,7 +71,7 @@ export async function captureLocalProject(sourceCwd: string, destination: string
 	}
 	await git(sourceRoot, ["bundle", "create", join(destination, "base.bundle"), "HEAD"]);
 	const origin = safeOrigin(await git(sourceRoot, ["remote", "get-url", "origin"]).catch(() => ""));
-	return { sourceHead, cwdRelative, origin };
+	return { cwdRelative, origin };
 }
 
 function copyFilter(source: string): boolean {
@@ -141,7 +139,6 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		binding = {
 			version: 2,
 			ownsBox: true,
-			appId: app.id,
 			boxId: box.sailboxId,
 			guestRepoDir: GUEST_REPO,
 			guestCwd: `${GUEST_REPO}${capture.cwdRelative && capture.cwdRelative !== "." ? `/${capture.cwdRelative.split(sep).join("/")}` : ""}`,
@@ -149,9 +146,6 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 			guestPython: `${GUEST_INSTALL}/venv/bin/python`,
 			guestSkillsDir: `${GUEST_INSTALL}/skills`,
 			hostResourceDir: resolve(options.sourceCwd),
-			sourceHead: capture.sourceHead,
-			baselineCommit: "",
-			initialBranch: branch,
 			inputs,
 		};
 		await mkdir(options.sessionDir, { recursive: true });
@@ -181,13 +175,8 @@ git -C ${GUEST_REPO} config credential.https://github.com.helper '!gh auth git-c
 uv venv --python 3.11 ${GUEST_INSTALL}/venv
 uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
 rm -rf ${GUEST_INSTALL}/project
-git -C ${GUEST_REPO} rev-parse HEAD
 `;
-		const result = await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
-		binding.baselineCommit = result.stdout.trim().split("\n").at(-1) ?? "";
-		if (!/^[a-f0-9]{40,64}$/.test(binding.baselineCommit))
-			throw new Error("Sailbox bootstrap did not produce a baseline commit");
-		await writeFile(join(options.sessionDir, "dispatch.json"), JSON.stringify(binding, null, 2));
+		await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
 		options.signal?.throwIfAborted();
 		success = true;
 		return binding;

@@ -168,7 +168,6 @@ async function fixture() {
 	const binding: DispatchBinding = {
 		version: 2,
 		ownsBox: true,
-		appId: "test-app",
 		boxId: `sb_${randomUUID()}`,
 		guestRepoDir: "/state/repo",
 		guestCwd: "/state/repo/subdir",
@@ -176,9 +175,6 @@ async function fixture() {
 		guestPython: "/state/venv/bin/python",
 		guestSkillsDir: "/state/skills",
 		hostResourceDir: dir,
-		sourceHead: "abc",
-		baselineCommit: "def",
-		initialBranch: "main",
 		inputs: {},
 	};
 	return {

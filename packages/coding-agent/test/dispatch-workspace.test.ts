@@ -39,7 +39,6 @@ describe("dispatch working tree capture", () => {
 			const metadata = await captureLocalProject(join(repo, "sub"), snapshot);
 			expect(metadata.cwdRelative).toBe("sub");
 			expect(metadata.origin).toBe("https://example.invalid/repo.git");
-			expect(metadata.sourceHead).toBe(git("rev-parse", "HEAD").trim());
 			expect(await readFile(join(snapshot, "tree", "tracked"), "utf8")).toBe("working tree");
 			expect(await readFile(join(snapshot, "tree", "forced-new"), "utf8")).toBe("explicitly tracked");
 			expect(await readFile(join(snapshot, "tree", "new file\nname"), "utf8")).toBe("new");
