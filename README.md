@@ -6,7 +6,7 @@ At a high level, the goal is to have one _foreground_ agent which the user conve
 
 The background agents:
 
-- run with flex inference (to save costs, since at ~sufficient throughput, one agent's latency is not going to block user time - ie latency hiding)
+- run with balanced inference (to save costs, since at ~sufficient throughput, one agent's latency is not going to block user time - ie latency hiding)
 - run with their own copy of the project, in a SAIL box
   - boxes sleep when idle, and wake up with their state when messaged
 
@@ -24,8 +24,8 @@ flowchart LR
     U[User]
     subgraph Local["Local: Prime daemon"]
         F["Foreground agent<br/>Sail ASAP inference"]
-        A["Worker A<br/>Sail Flex inference"]
-        B["Worker B<br/>Sail Flex inference"]
+        A["Worker A<br/>Sail Balanced inference"]
+        B["Worker B<br/>Sail Balanced inference"]
         F <-->|Tasks, questions, results| A
         F <-->|Tasks, questions, results| B
     end
