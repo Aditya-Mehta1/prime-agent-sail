@@ -2,22 +2,24 @@
 
 Background agents on [Sail](https://docs.sailresearch.com), built as a fork of [Prime Agent](https://github.com/PrimeIntellect-ai/prime-agent).
 
-At a high level, the goal is to have one _foreground_ agent which the user converses with, responsible for managing _background_ agents - which are responsible for implementation (eg PRs).
+At a high level, the goal is to have one _foreground_ agent which the user converses with, responsible for managing _background_ agents - which are responsible for implementation (eg PRs) à la [Cursor Projects](https://cursor.com/blog/projects).
 
 The background agents:
 
-- run with balanced inference (to save costs, since at ~sufficient throughput, one agent's latency is not going to block user time - ie latency hiding)
-- run with their own copy of the project, in a SAIL box
-  - boxes sleep when idle, and wake up with their state when messaged
+- run with balanced inference
+- run with their own copy of the project, in a Sailbox
 
 The foreground agent:
-- manages the bg agents: can read their state and msg them / receive msgs
-- maintains a project state through markdown files, tracking user intent / project scope / work done etc - which is then shared w the bg agents
-- runs on ASAP (interactive)
+
+- doesn't work on PRs etc itself
+- instead it manages the bg agents:
+  - breaks user requests into
+  - can read their state and msg them / receive msgs
+- maintains a project state, user intent, tasks do[ing|ne] etc - which is then shared w the bg agents
 
 ## How it works
 
-- `rlm.dispatch()` - new RLM primitive that starts a background worker in its own SAIL box and sets up a repo copy.
+- `rlm.dispatch()` - new RLM primitive that starts a background worker in its own Sailbox and sets up a repo copy.
 
 ```mermaid
 flowchart LR
@@ -38,19 +40,46 @@ flowchart LR
     B <-->|Run code / read output| SB
 ```
 
-- **Remote work:** `rlm.dispatch()` gives a worker its own Sailbox and project copy, while reusing Prime's agent messaging and lifecycle. Agent controllers stay in the local daemon; Python, shell commands and file operations run remotely. A worker's `rlm.spawn()` children share its box and checkout, with separate REPLs.
-- **Shared context:** the foreground maintains `PROJECT.md` and detailed notes in `project/`, stored with its session. Workers receive relevant context and report findings; the foreground updates the notes and relays changes in user direction.
-- **Background lifetime:** workers continue after the terminal closes, provided the local daemon stays running. Idle workers save serializable Python state and their boxes can sleep; follow-up messages resume them.
+- `rlm.dispatch()` spawns a deepseek 4.1 flash subagent on Sail Balanced
+- its harness / inferences / controller run on the local prime daemon [^1]
+- each subagent's **REPL / file operations** work on Sailboxes which:
+  - clone the working repo and workers can write PRs to it [^2]
+  - autosleep when the agent is "idle"
+  - when idled can be awoken by:
+    - fg agent messaging the worker
+    - cron jobs by the agent itself
+- each worker is also an RLM:
+  - it can spawn children via `rlm.spawn()` which work on the same box
+  - it can message parents / children / siblings
 
-### What gets copied
+[^1]: "separating the hands and the brain" has many benefits here [TODO - link to docs]
+
+[^2]: gh auth using credential injection LINK https://docs.sailresearch.com/sailboxes-credentials
+
+**Shared context:**
 
 ```text
 /workspace/
 ├── <repository-name>/   cloned from main
 └── inputs/
-    ├── project_context/   PROJECT.md + project/ - a snapshot of the foreground's project notes
+    ├── project_context/   PROJECT.md + project/
     └── <name>/          anything passed as inputs={'<name>': 'path'}
 ```
+
+- the foreground maintains `PROJECT.md` and detailed notes in `project/`,
+  - tracking user intent and dispatched work (both ongoing and completed)
+  - shared with workers
+
+- the fg agent can share arbitrary local files with workers too
+- (prime agent skills are copied too)
+
+## Workflows that "just work"
+
+TODO
+
+Crons
+Many agents working
+Agents returning PR
 
 ## Try it
 
