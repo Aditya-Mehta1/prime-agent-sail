@@ -50,7 +50,6 @@ flowchart LR
 └── inputs/
     ├── project_context/   PROJECT.md + project/ - a snapshot of the foreground's project notes
     └── <name>/          anything passed as inputs={'<name>': 'path'}
-/opt/prime-dispatch/   Prime's Python runtime + skills
 ```
 
 ## Try it
