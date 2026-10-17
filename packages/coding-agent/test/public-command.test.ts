@@ -444,6 +444,7 @@ describe("public command routing", () => {
 		await expect(handlePublicCommand(["--offline", "help", "mcp", "add"])).resolves.toMatchObject({
 			handled: true,
 		});
+		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("mcp add filesystem -- npx -y"));
 		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("prime-agent mcp add <name>"));
 
 		await expect(handlePublicCommand(["help", "--verbose"])).resolves.toMatchObject({ handled: true });
