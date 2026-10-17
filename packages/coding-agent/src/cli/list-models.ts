@@ -93,4 +93,8 @@ export async function listModels(modelRegistry: ModelRegistry, searchPattern?: s
 		].join("  ");
 		console.log(line);
 	}
+
+	const totalCount = rows.length;
+	console.log("");
+	console.log(`Total: ${totalCount} ${totalCount === 1 ? "model" : "models"}`);
 }
