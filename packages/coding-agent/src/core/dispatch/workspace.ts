@@ -13,7 +13,6 @@ import { SailClient } from "./sail-client.js";
 import type { DispatchBinding } from "./types.js";
 
 const executeFile = promisify(execFile);
-const GUEST_REPO = "/workspace/repo";
 const GUEST_INSTALL = "/opt/prime-dispatch";
 const GUEST_STATE = "/var/lib/prime-dispatch/state";
 
@@ -32,6 +31,7 @@ export async function getDispatchProject(sourceCwd: string) {
 	if (source?.host !== "github.com") throw new Error("Dispatch requires a GitHub origin remote");
 	return {
 		cwdRelative: relative(sourceRoot, await realpath(sourceCwd)),
+		guestRepoDir: `/workspace/repos/${basename(source.path)}`,
 		origin: `https://github.com/${source.path}.git`,
 		userName: (await git(sourceRoot, ["config", "--get", "user.name"])).trim(),
 		userEmail: (await git(sourceRoot, ["config", "--get", "user.email"])).trim(),
@@ -100,8 +100,8 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		binding = {
 			ownsBox: true,
 			boxId: box.sailboxId,
-			guestRepoDir: GUEST_REPO,
-			guestCwd: `${GUEST_REPO}${project.cwdRelative && project.cwdRelative !== "." ? `/${project.cwdRelative.split(sep).join("/")}` : ""}`,
+			guestRepoDir: project.guestRepoDir,
+			guestCwd: `${project.guestRepoDir}${project.cwdRelative && project.cwdRelative !== "." ? `/${project.cwdRelative.split(sep).join("/")}` : ""}`,
 			guestStateDir: `${GUEST_STATE}/${basename(options.sessionDir)}`,
 			guestPython: `${GUEST_INSTALL}/venv/bin/python`,
 			guestSkillsDir: `${GUEST_INSTALL}/skills`,
@@ -120,11 +120,11 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		const bootstrap = `set -eu
 mkdir -p ${GUEST_STATE} /workspace
 mv ${GUEST_INSTALL}/inputs /workspace/inputs
-git init -q -b ${shellQuote(branch)} ${GUEST_REPO}
-git -C ${GUEST_REPO} remote add origin ${shellQuote(project.origin)}
-git -C ${GUEST_REPO} pull -q --ff-only origin main
-git -C ${GUEST_REPO} config user.name ${shellQuote(project.userName)}
-git -C ${GUEST_REPO} config user.email ${shellQuote(project.userEmail)}
+git init -q -b ${shellQuote(branch)} ${shellQuote(binding.guestRepoDir)}
+git -C ${shellQuote(binding.guestRepoDir)} remote add origin ${shellQuote(project.origin)}
+git -C ${shellQuote(binding.guestRepoDir)} pull -q --ff-only origin main
+git -C ${shellQuote(binding.guestRepoDir)} config user.name ${shellQuote(project.userName)}
+git -C ${shellQuote(binding.guestRepoDir)} config user.email ${shellQuote(project.userEmail)}
 uv venv --python 3.11 ${GUEST_INSTALL}/venv
 uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTALL}/runtime`, "dill", ...DEFAULT_RLM_EXTRA_UV_ARGS, ...skillPackages].map(shellQuote).join(" ")}
 `;

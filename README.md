@@ -46,7 +46,8 @@ flowchart LR
 
 ```text
 /workspace/
-├── repo/     cloned from main
+├── repos/
+│   └── <repository-name>/   cloned from main
 └── inputs/
     ├── prime_project/   PROJECT.md + project/ - a snapshot of the foreground's project notes
     └── <name>/          anything passed as inputs={'<name>': 'path'}
