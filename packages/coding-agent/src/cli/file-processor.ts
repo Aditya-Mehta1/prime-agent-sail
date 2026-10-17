@@ -1,4 +1,5 @@
-import { access, readFile, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { readFile, stat } from "node:fs/promises";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import chalk from "chalk";
 import { resolve } from "path";
@@ -15,6 +16,23 @@ export interface ProcessFileOptions {
 	autoResizeImages?: boolean;
 }
 
+type FileArgumentInspection = { ok: true; stats: Stats } | { ok: false; error: string };
+
+async function inspectFileArgument(absolutePath: string): Promise<FileArgumentInspection> {
+	let stats: Stats;
+	try {
+		stats = await stat(absolutePath);
+	} catch {
+		return { ok: false, error: `File not found: ${absolutePath}` };
+	}
+
+	if (stats.isDirectory()) {
+		return { ok: false, error: `Expected a file, got a directory: ${absolutePath}` };
+	}
+
+	return { ok: true, stats };
+}
+
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	let text = "";
@@ -23,15 +41,13 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 	for (const fileArg of fileArgs) {
 		const absolutePath = resolve(resolveReadPath(fileArg, process.cwd()));
 
-		try {
-			await access(absolutePath);
-		} catch {
-			console.error(chalk.red(`Error: File not found: ${absolutePath}`));
+		const inspection = await inspectFileArgument(absolutePath);
+		if (!inspection.ok) {
+			console.error(chalk.red(`Error: ${inspection.error}`));
 			process.exit(1);
 		}
 
-		const stats = await stat(absolutePath);
-		if (stats.size === 0) {
+		if (inspection.stats.size === 0) {
 			continue;
 		}
 
