@@ -87,6 +87,14 @@ npm run check
 
 This performs formatting, linting, type checking, installer rendering checks, and the browser smoke check. It does not run the test suite.
 
+Run the full workspace suite without provider credentials from the root:
+
+```bash
+./test.sh
+```
+
+The script moves `~/.prime/agent/auth.json` aside, restores it on exit, unsets provider API key environment variables, and runs `npm test`.
+
 Run focused tests from the package root. For example:
 
 ```bash
