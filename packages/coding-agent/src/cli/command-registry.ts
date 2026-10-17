@@ -167,6 +167,8 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 		path: ["model", "list"],
 		usage: "model list [search]",
 		summary: "List available models",
+		description: "The search matches provider names and model ids.",
+		examples: [`model list sonnet`, `model list anthropic`],
 	},
 	{
 		path: ["session"],
