@@ -28,6 +28,9 @@ export interface SelectListTheme {
 	noMatch: (text: string) => string;
 }
 
+export const DEFAULT_NO_MATCH_MESSAGE = "  No matching commands";
+export type SelectListNoMatchMessage = string | ((filter: string) => string);
+
 export interface SelectListTruncatePrimaryContext {
 	text: string;
 	maxWidth: number;
@@ -43,6 +46,11 @@ export interface SelectListLayoutOptions {
 	showItemMetadata?: boolean;
 	showDirectionalScrollInfo?: boolean;
 	showSelectedDescription?: boolean;
+	/**
+	 * Message rendered when the filtered list is empty. Accepts a string or a function of the current
+	 * filter text. Defaults to "  No matching commands".
+	 */
+	noMatchMessage?: SelectListNoMatchMessage;
 }
 
 export class SelectList implements Component {
@@ -52,6 +60,8 @@ export class SelectList implements Component {
 	private maxVisible: number = 5;
 	private theme: SelectListTheme;
 	private layout: SelectListLayoutOptions;
+	private noMatchMessage: SelectListNoMatchMessage;
+	private filter: string = "";
 
 	public onSelect?: (item: SelectItem) => void;
 	public onCancel?: () => void;
@@ -63,9 +73,11 @@ export class SelectList implements Component {
 		this.maxVisible = maxVisible;
 		this.theme = theme;
 		this.layout = layout;
+		this.noMatchMessage = layout.noMatchMessage ?? DEFAULT_NO_MATCH_MESSAGE;
 	}
 
 	setFilter(filter: string): void {
+		this.filter = filter;
 		this.filteredItems = this.items.filter((item) => item.value.toLowerCase().startsWith(filter.toLowerCase()));
 		this.selectedIndex = 0;
 	}
@@ -74,13 +86,18 @@ export class SelectList implements Component {
 		this.selectedIndex = Math.max(0, Math.min(index, this.filteredItems.length - 1));
 	}
 
+	/** Replaces the message rendered when the filtered list is empty. */
+	setNoMatchMessage(message: SelectListNoMatchMessage): void {
+		this.noMatchMessage = message;
+	}
+
 	invalidate(): void {}
 
 	render(width: number): string[] {
 		const lines: string[] = [];
 
 		if (this.filteredItems.length === 0) {
-			lines.push(this.theme.noMatch("  No matching commands"));
+			lines.push(this.renderNoMatch(width));
 			return lines;
 		}
 
@@ -176,6 +193,15 @@ export class SelectList implements Component {
 		}
 
 		return prefix + truncatedValue;
+	}
+
+	private resolveNoMatchMessage(): string {
+		const message = this.noMatchMessage;
+		return typeof message === "function" ? message(this.filter) : message;
+	}
+
+	private renderNoMatch(width: number): string {
+		return this.theme.noMatch(truncateToWidth(this.resolveNoMatchMessage(), width, ""));
 	}
 
 	private formatDirectionalScrollInfo(hiddenAbove: number, hiddenBelow: number): string {
