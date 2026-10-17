@@ -177,6 +177,8 @@ export const COMMAND_SPECS: readonly CommandSpec[] = [
 		path: ["session", "export"],
 		usage: "session export <file> [output]",
 		summary: "Export a saved session to HTML",
+		description: `Without [output], the export writes ${APP_NAME}-session-<name>.html to the current directory.`,
+		examples: [`session export session.jsonl exports/session.html`],
 	},
 	{
 		path: ["config"],
