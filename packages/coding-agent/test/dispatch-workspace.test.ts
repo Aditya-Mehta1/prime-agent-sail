@@ -7,10 +7,10 @@ import { getDispatchProject, loadDispatchBinding } from "../src/core/dispatch/wo
 
 describe("dispatch workspace", () => {
 	it.each([
-		"git@github.com:fixture/repo.git",
-		"ssh://git@github.com/fixture/repo.git",
-		"https://user:fixture-secret@github.com/fixture/repo.git",
-	])("resolves a credential-free GitHub origin and relative cwd from %s", async (origin) => {
+		["git@github.com:fixture/my-project.git", "my-project"],
+		["ssh://git@github.com/fixture/project.tools.git", "project.tools"],
+		["https://user:fixture-secret@github.com/fixture/inputs.git", "inputs"],
+	])("resolves a credential-free GitHub origin and relative cwd from %s", async (origin, name) => {
 		const directory = await mkdtemp(join(tmpdir(), "dispatch-snapshot-"));
 		const repo = join(directory, "repo");
 		await mkdir(repo);
@@ -32,7 +32,8 @@ describe("dispatch workspace", () => {
 			const index = await readFile(join(repo, ".git", "index"));
 			const metadata = await getDispatchProject(join(repo, "sub"));
 			expect(metadata.cwdRelative).toBe("sub");
-			expect(metadata.origin).toBe("https://github.com/fixture/repo.git");
+			expect(metadata.origin).toBe(`https://github.com/fixture/${name}.git`);
+			expect(metadata.guestRepoDir).toBe(`/workspace/repos/${name}`);
 			expect(metadata.userName).toBe("Fixture O'Example");
 			expect(metadata.userEmail).toBe("fixture@localhost");
 			expect(await readFile(join(repo, ".git", "index"))).toEqual(index);
