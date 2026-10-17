@@ -33,7 +33,8 @@ describe("dispatch workspace", () => {
 			const metadata = await getDispatchProject(join(repo, "sub"));
 			expect(metadata.cwdRelative).toBe("sub");
 			expect(metadata.origin).toBe(`https://github.com/fixture/${name}.git`);
-			expect(metadata.guestRepoDir).toBe(`/workspace/repos/${name}`);
+			expect(metadata.guestRepoDir).toBe(`/workspace/${name}`);
+			expect(metadata.guestInputsDir).toBe(name === "inputs" ? "/workspace/.inputs" : "/workspace/inputs");
 			expect(metadata.userName).toBe("Fixture O'Example");
 			expect(metadata.userEmail).toBe("fixture@localhost");
 			expect(await readFile(join(repo, ".git", "index"))).toEqual(index);

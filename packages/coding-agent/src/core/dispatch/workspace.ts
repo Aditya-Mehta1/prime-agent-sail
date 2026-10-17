@@ -29,9 +29,11 @@ export async function getDispatchProject(sourceCwd: string) {
 	const sourceRoot = (await git(sourceCwd, ["rev-parse", "--show-toplevel"])).trim();
 	const source = parseGitUrl(`git:${(await git(sourceRoot, ["remote", "get-url", "origin"])).trim()}`);
 	if (source?.host !== "github.com") throw new Error("Dispatch requires a GitHub origin remote");
+	const repoName = basename(source.path);
 	return {
 		cwdRelative: relative(sourceRoot, await realpath(sourceCwd)),
-		guestRepoDir: `/workspace/repos/${basename(source.path)}`,
+		guestRepoDir: `/workspace/${repoName}`,
+		guestInputsDir: repoName === "inputs" ? "/workspace/.inputs" : "/workspace/inputs",
 		origin: `https://github.com/${source.path}.git`,
 		userName: (await git(sourceRoot, ["config", "--get", "user.name"])).trim(),
 		userEmail: (await git(sourceRoot, ["config", "--get", "user.email"])).trim(),
@@ -58,6 +60,7 @@ async function captureInputs(
 	inputs: Record<string, string>,
 	sourceCwd: string,
 	destination: string,
+	guestDir: string,
 ): Promise<Record<string, string>> {
 	const paths: Record<string, string> = {};
 	for (const [name, path] of Object.entries(inputs)) {
@@ -68,7 +71,7 @@ async function captureInputs(
 			verbatimSymlinks: true,
 			filter: copyFilter,
 		});
-		paths[name] = `/workspace/inputs/${name}`;
+		paths[name] = `${guestDir}/${name}`;
 	}
 	return paths;
 }
@@ -91,7 +94,12 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		await cp(findRuntime(), runtime, { recursive: true, filter: copyFilter });
 		await cp(getBundledSkillsDir(), join(staging, "skills"), { recursive: true, filter: copyFilter });
 		await mkdir(join(staging, "inputs"));
-		const inputs = await captureInputs(options.inputs ?? {}, options.sourceCwd, join(staging, "inputs"));
+		const inputs = await captureInputs(
+			options.inputs ?? {},
+			options.sourceCwd,
+			join(staging, "inputs"),
+			project.guestInputsDir,
+		);
 		const branch = `dispatch/${randomUUID()}`;
 		const app = await (await client.sdk).findApp("prime-agent-dispatch", true);
 		options.signal?.throwIfAborted();
@@ -119,7 +127,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 			.map((name) => `${GUEST_INSTALL}/skills/${name}`);
 		const bootstrap = `set -eu
 mkdir -p ${GUEST_STATE} /workspace
-mv ${GUEST_INSTALL}/inputs /workspace/inputs
+mv ${GUEST_INSTALL}/inputs ${shellQuote(project.guestInputsDir)}
 git init -q -b ${shellQuote(branch)} ${shellQuote(binding.guestRepoDir)}
 git -C ${shellQuote(binding.guestRepoDir)} remote add origin ${shellQuote(project.origin)}
 git -C ${shellQuote(binding.guestRepoDir)} pull -q --ff-only origin main

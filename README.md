@@ -46,13 +46,14 @@ flowchart LR
 
 ```text
 /workspace/
-├── repos/
-│   └── <repository-name>/   cloned from main
+├── <repository-name>/   cloned from main
 └── inputs/
     ├── prime_project/   PROJECT.md + project/ - a snapshot of the foreground's project notes
     └── <name>/          anything passed as inputs={'<name>': 'path'}
 /opt/prime-dispatch/   Prime's Python runtime + skills
 ```
+
+For a repository named `inputs`, copied inputs use `/workspace/.inputs/` to keep them separate from the checkout.
 
 ## Try it
 
