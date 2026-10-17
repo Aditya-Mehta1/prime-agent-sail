@@ -9,10 +9,8 @@ The background agents:
 - run with balanced inference
 - run with their own copy of the project, in a Sailbox
 
-The foreground agent:
-
-- doesn't work on PRs etc itself
-- instead it manages the bg agents:
+The foreground agent, doesn't work on PRs etc itself, instead it
+- manages the bg agents:
   - breaks user requests into
   - can read their state and msg them / receive msgs
 - maintains a project state, user intent, tasks do[ing|ne] etc - which is then shared w the bg agents
