@@ -1,8 +1,32 @@
 import { fuzzyFilter } from "../fuzzy.js";
-import { getKeybindings } from "../keybindings.js";
+import { getKeybindings, type Keybinding } from "../keybindings.js";
+import type { KeyId } from "../keys.js";
 import type { Component } from "../tui.js";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 import { Input } from "./input.js";
+
+/** Abbreviated labels for keys that read poorly with plain capitalization. */
+const KEY_LABEL_ABBREVIATIONS: Record<string, string> = {
+	escape: "Esc",
+	up: "↑",
+	down: "↓",
+	left: "←",
+	right: "→",
+};
+
+/** Formats one configured key id for hint text, e.g. "ctrl+c" -> "Ctrl+C" and "escape" -> "Esc". */
+function formatKeyLabel(key: KeyId): string {
+	return key
+		.split("+")
+		.map((part) => KEY_LABEL_ABBREVIATIONS[part] ?? part.charAt(0).toUpperCase() + part.slice(1))
+		.join("+");
+}
+
+/** Formats the configured keys of a keybinding plus always-available keys, e.g. "Esc/Ctrl+C". */
+function formatKeybindingLabels(keybinding: Keybinding, extraKeys: KeyId[] = []): string {
+	const labels = getKeybindings().getKeys(keybinding).concat(extraKeys).map(formatKeyLabel);
+	return [...new Set(labels)].join("/");
+}
 
 export interface SettingItem {
 	/** Unique identifier for this setting */
@@ -220,16 +244,14 @@ export class SettingsList implements Component {
 	}
 
 	private addHintLine(lines: string[], width: number): void {
+		const changeKeys = formatKeybindingLabels("tui.select.confirm", ["space"]);
+		const cancelKeys = formatKeybindingLabels("tui.select.cancel");
+		const hints = [
+			...(this.searchEnabled ? ["Type to search"] : []),
+			`${changeKeys} to change`,
+			...(cancelKeys ? [`${cancelKeys} to cancel`] : []),
+		];
 		lines.push("");
-		lines.push(
-			truncateToWidth(
-				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
-				),
-				width,
-			),
-		);
+		lines.push(truncateToWidth(this.theme.hint(`  ${hints.join(" · ")}`), width));
 	}
 }
