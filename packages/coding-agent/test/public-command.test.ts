@@ -412,8 +412,10 @@ describe("public command routing", () => {
 	it("resolves command help when options precede the help flag", async () => {
 		await handlePublicCommand(["list", "--all", "--help"]);
 		await handlePublicCommand(["package", "install", "--local", "--help"]);
+		await handlePublicCommand(["session", "export", "--verbose", "--help"]);
+		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("session.jsonl exports/session.html"));
 
-		expect(console.log).toHaveBeenCalledTimes(2);
+		expect(console.log).toHaveBeenCalledTimes(3);
 		expect(console.error).not.toHaveBeenCalled();
 		expect(mocks.daemonCommands).toEqual([]);
 		expect(mocks.packageCommands).toEqual([]);
