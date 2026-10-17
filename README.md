@@ -11,9 +11,9 @@ The background agents:
 
 The foreground agent, doesn't work on PRs etc itself, instead it
 - manages the bg agents:
-  - breaks user requests into
-  - can read their state and msg them / receive msgs
-- maintains a project state, user intent, tasks do[ing|ne] etc - which is then shared w the bg agents
+  - breaks user requests into independent tasks
+  - can read worker state and msg them / receive msgs
+- maintains a project state, user intent, tasks do[ing|ne] etc 
 
 ## How it works
 
