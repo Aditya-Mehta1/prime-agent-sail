@@ -38,13 +38,13 @@ flowchart LR
     B <-->|Run code / read output| SB
 ```
 
-### `rlm.dispatch()` - new RLM primitive that starts a background worker in its own Sailbox and sets up a repo copy.
+### `rlm.dispatch()` - new RLM primitive 
 
-`rlm.dispatch()` spawns a deepseek 4.1 flash subagent on Sail Balanced
+`rlm.dispatch()` is a new RLM primitive that starts a background worker in its own Sailbox and sets up a repo copy. It spawns a deepseek 4.1 flash subagent on Sail Balanced:
 
-- its harness / inferences / controller run on the local prime daemon <sup>[1](#note-1)</sup>
+- worker harness / inferences / controller run on the local prime daemon <sup>[1](#note-1)</sup>
 
-- each subagent's **REPL / file operations** work on Sailboxes which:
+- each subagent's REPL / file operations work on **Sailboxes** which:
   - clone the working repo and workers can write PRs to it <sup>[2](#note-2)</sup>
   - autosleep when the agent is "idle"
   - when idled can be awoken by:
@@ -56,10 +56,10 @@ flowchart LR
   - it can message parents / children / siblings
 
 <a name="note-1"></a>
-<sup>1</sup> "separating the hands and the brain" has many benefits here [TODO - link to docs]
+<sup>[1]</sup> "separating the hands and the brain" has many benefits here [TODO - link to docs]
 
 <a name="note-2"></a>
-<sup>2</sup> gh auth using [credential injection](https://docs.sailresearch.com/sailboxes-credentials)
+<sup>[2]</sup> gh auth using [credential injection](https://docs.sailresearch.com/sailboxes-credentials)
 
 ### Worker Context
 
