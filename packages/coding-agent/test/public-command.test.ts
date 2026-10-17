@@ -445,6 +445,7 @@ describe("public command routing", () => {
 			handled: true,
 		});
 		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("prime-agent mcp add <name>"));
+		expect(console.log).toHaveBeenCalledWith(expect.stringContaining("prime-agent mcp add remote --url"));
 
 		await expect(handlePublicCommand(["help", "--verbose"])).resolves.toMatchObject({ handled: true });
 		expect(console.log).toHaveBeenLastCalledWith(expect.stringContaining("prime-agent - AI coding assistant"));
