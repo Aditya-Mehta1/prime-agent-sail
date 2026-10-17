@@ -501,6 +501,7 @@ settings.updateValue("theme", "light");
 
 **Controls:**
 - Arrow keys: Navigate
+- Page Up/Page Down: Move by one page
 - Enter/Space: Activate (cycle value or open submenu)
 - Escape: Cancel
 
