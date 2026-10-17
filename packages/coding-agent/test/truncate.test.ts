@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { truncateTail } from "../src/core/tools/truncate.js";
+import { truncateLine, truncateTail } from "../src/core/tools/truncate.js";
 
 describe("truncateTail", () => {
 	it("never returns more than maxBytes, whatever the trailing blank shape", () => {
@@ -21,5 +21,12 @@ describe("truncateTail", () => {
 				).toBeLessThanOrEqual(maxBytes);
 			}
 		}
+	});
+});
+
+describe("truncateLine", () => {
+	it("never cuts a surrogate pair in half", () => {
+		const cut = (maxChars: number) => truncateLine(`aaaa😀bbbb`, maxChars).text;
+		expect([4, 5, 6].map(cut)).toEqual(["aaaa... [truncated]", "aaaa... [truncated]", "aaaa😀... [truncated]"]);
 	});
 });

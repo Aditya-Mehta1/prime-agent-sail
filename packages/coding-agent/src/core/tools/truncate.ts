@@ -246,6 +246,7 @@ function truncateStringToBytesFromEnd(str: string, maxBytes: number): string {
 /**
  * Truncate a single line to max characters, adding [truncated] suffix.
  * Used for grep match lines.
+ * The cut backs off one code unit when maxChars lands inside a surrogate pair, so an emoji is never split.
  */
 export function truncateLine(
 	line: string,
@@ -254,5 +255,14 @@ export function truncateLine(
 	if (line.length <= maxChars) {
 		return { text: line, wasTruncated: false };
 	}
-	return { text: `${line.slice(0, maxChars)}... [truncated]`, wasTruncated: true };
+	const cutIndex = surrogateSafeCutIndex(line, maxChars);
+	return { text: `${line.slice(0, cutIndex)}... [truncated]`, wasTruncated: true };
+}
+
+/** Cut index that never leaves a high surrogate without its low surrogate. */
+function surrogateSafeCutIndex(line: string, maxChars: number): number {
+	const high = line.charCodeAt(maxChars - 1);
+	const low = line.charCodeAt(maxChars);
+	const splitsPair = high >= 0xd800 && high <= 0xdbff && low >= 0xdc00 && low <= 0xdfff;
+	return splitsPair ? maxChars - 1 : maxChars;
 }
