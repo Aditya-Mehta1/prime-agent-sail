@@ -9,7 +9,7 @@ describe("dispatch workspace", () => {
 	it.each([
 		["git@github.com:fixture/my-project.git", "my-project"],
 		["ssh://git@github.com/fixture/project.tools.git", "project.tools"],
-		["https://user:fixture-secret@github.com/fixture/inputs.git", "inputs"],
+		["https://user:fixture-secret@github.com/fixture/my-project.git", "my-project"],
 	])("resolves a credential-free GitHub origin and relative cwd from %s", async (origin, name) => {
 		const directory = await mkdtemp(join(tmpdir(), "dispatch-snapshot-"));
 		const repo = join(directory, "repo");
@@ -34,7 +34,6 @@ describe("dispatch workspace", () => {
 			expect(metadata.cwdRelative).toBe("sub");
 			expect(metadata.origin).toBe(`https://github.com/fixture/${name}.git`);
 			expect(metadata.guestRepoDir).toBe(`/workspace/${name}`);
-			expect(metadata.guestInputsDir).toBe(name === "inputs" ? "/workspace/.inputs" : "/workspace/inputs");
 			expect(metadata.userName).toBe("Fixture O'Example");
 			expect(metadata.userEmail).toBe("fixture@localhost");
 			expect(await readFile(join(repo, ".git", "index"))).toEqual(index);
