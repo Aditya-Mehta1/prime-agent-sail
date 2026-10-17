@@ -86,6 +86,7 @@ const parseCases: Array<[string, string[], Expected]> = [
 	["--fork", ["--fork", "1234abcd"], { fork: "1234abcd", messages: [] }],
 	["--thinking", ["--thinking", "high"], { thinking: "high" }],
 	["--models is comma separated", ["--models", "gpt-4o,claude-sonnet"], { models: ["gpt-4o", "claude-sonnet"] }],
+	["--models drops blank entries", ["--models", "gpt-4o,, claude-sonnet"], { models: ["gpt-4o", "claude-sonnet"] }],
 	["--no-session", ["--no-session"], { noSession: true }],
 	["--extension", ["--extension", "./a.ts"], { extensions: ["./a.ts"] }],
 	["-e", ["-e", "./a.ts"], { extensions: ["./a.ts"] }],
@@ -266,6 +267,8 @@ const errorCases: Array<[string, string[], string]> = [
 	["--goal followed by a long flag", ["--goal", "--verbose"], "--goal requires a value"],
 	["--goal without a value", ["--goal"], "--goal requires a value"],
 	["empty --goal objective", ["--goal", "  "], "--goal requires a non-empty objective"],
+	["empty --models list", ["--models", ""], "--models requires at least one model pattern"],
+	["blank-only --models list", ["--models", " , "], "--models requires at least one model pattern"],
 	[
 		"--autonomous-gate rejects a long-option value",
 		["--autonomous-gate", "---run"],

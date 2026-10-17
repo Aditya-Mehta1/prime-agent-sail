@@ -178,7 +178,15 @@ export function parseArgs(args: string[]): Args {
 			}
 		} else if (arg === "--models") {
 			if (hasRequiredOptionValue(args, i, arg, result)) {
-				result.models = args[++i].split(",").map((s) => s.trim());
+				const patterns = args[++i]
+					.split(",")
+					.map((pattern) => pattern.trim())
+					.filter((pattern) => pattern.length > 0);
+				if (patterns.length === 0) {
+					result.diagnostics.push({ type: "error", message: "--models requires at least one model pattern" });
+				} else {
+					result.models = patterns;
+				}
 			}
 		} else if (arg === "--no-tools" || arg === "-nt") {
 			result.noTools = true;
