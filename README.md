@@ -41,9 +41,9 @@ flowchart LR
 ```
 
 - `rlm.dispatch()` spawns a deepseek 4.1 flash subagent on Sail Balanced
-- its harness / inferences / controller run on the local prime daemon [^1]
+- its harness / inferences / controller run on the local prime daemon <sup>[1](#note-1)</sup>
 - each subagent's **REPL / file operations** work on Sailboxes which:
-  - clone the working repo and workers can write PRs to it [^2]
+  - clone the working repo and workers can write PRs to it <sup>[2](#note-2)</sup>
   - autosleep when the agent is "idle"
   - when idled can be awoken by:
     - fg agent messaging the worker
@@ -52,9 +52,11 @@ flowchart LR
   - it can spawn children via `rlm.spawn()` which work on the same box
   - it can message parents / children / siblings
 
-[^1]: "separating the hands and the brain" has many benefits here [TODO - link to docs]
+<a name="note-1"></a>
+<sup>1</sup> "separating the hands and the brain" has many benefits here [TODO - link to docs]
 
-[^2]: gh auth using credential injection LINK https://docs.sailresearch.com/sailboxes-credentials
+<a name="note-2"></a>
+<sup>2</sup> gh auth using [credential injection](https://docs.sailresearch.com/sailboxes-credentials)
 
 **Shared context:**
 
