@@ -76,13 +76,16 @@ flowchart LR
 - the fg agent can share arbitrary local files with workers too
 - (prime agent skills are copied too)
 
-## Workflows that "just work"
+## Demo
 
-TODO
+https://github.com/user-attachments/assets/0d77f48b-c22a-4eba-bf6c-3d88046c3001
 
-Crons
-Many agents working
-Agents returning PR
+
+### Crons on remote agents just work :)
+
+https://github.com/user-attachments/assets/95536922-28be-4614-993c-639074e1d43b
+
+
 
 ## Try it
 
