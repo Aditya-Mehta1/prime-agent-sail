@@ -397,5 +397,14 @@ function parsePositiveInt(value: string, flag: string, result: Args): number | u
 		result.diagnostics.push({ type: "error", message: `${flag} must be a positive integer` });
 		return undefined;
 	}
+	// Above the safe range `Number` silently rounds, so the accepted value would
+	// differ from the digits the user typed.
+	if (parsed > Number.MAX_SAFE_INTEGER) {
+		result.diagnostics.push({
+			type: "error",
+			message: `${flag} must be a positive integer up to ${Number.MAX_SAFE_INTEGER}`,
+		});
+		return undefined;
+	}
 	return parsed;
 }

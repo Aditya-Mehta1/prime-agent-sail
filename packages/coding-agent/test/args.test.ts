@@ -278,6 +278,11 @@ const errorCases: Array<[string, string[], string]> = [
 	],
 	["--goal-token-budget without --goal", ["--goal-token-budget", "50000"], "--goal-token-budget requires --goal"],
 	["non-positive --goal-token-budget", ["--goal-token-budget", "0"], "--goal-token-budget must be a positive integer"],
+	[
+		"integer above the safe range",
+		["--autonomous-max-turns", "9007199254740993"],
+		"--autonomous-max-turns must be a positive integer up to 9007199254740991",
+	],
 	["--goal-token-budget without a value", ["--goal-token-budget"], "--goal-token-budget requires a value"],
 ];
 
