@@ -163,13 +163,14 @@ export class SettingsList implements Component {
 		}
 
 		const kb = getKeybindings();
-		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
 		if (kb.matches(data, "tui.select.up")) {
-			if (displayItems.length === 0) return;
-			this.selectedIndex = this.selectedIndex === 0 ? displayItems.length - 1 : this.selectedIndex - 1;
+			this.moveSelection(-1, true);
 		} else if (kb.matches(data, "tui.select.down")) {
-			if (displayItems.length === 0) return;
-			this.selectedIndex = this.selectedIndex === displayItems.length - 1 ? 0 : this.selectedIndex + 1;
+			this.moveSelection(1, true);
+		} else if (kb.matches(data, "tui.select.pageUp")) {
+			this.moveSelection(-this.maxVisible, false);
+		} else if (kb.matches(data, "tui.select.pageDown")) {
+			this.moveSelection(this.maxVisible, false);
 		} else if (kb.matches(data, "tui.select.confirm") || data === " ") {
 			this.activateItem();
 		} else if (kb.matches(data, "tui.select.cancel")) {
@@ -182,6 +183,20 @@ export class SettingsList implements Component {
 			this.searchInput.handleInput(sanitized);
 			this.applyFilter(this.searchInput.getValue());
 		}
+	}
+
+	/** Move the selection by `delta` items, wrapping around only when `wrap` is set. */
+	private moveSelection(delta: number, wrap: boolean): void {
+		const displayItems = this.searchEnabled ? this.filteredItems : this.items;
+		const itemCount = displayItems.length;
+		if (itemCount === 0) return;
+		const maxIndex = itemCount - 1;
+		const nextIndex = this.selectedIndex + delta;
+		if (wrap) {
+			this.selectedIndex = (nextIndex + itemCount) % itemCount;
+			return;
+		}
+		this.selectedIndex = Math.max(0, Math.min(maxIndex, nextIndex));
 	}
 
 	private activateItem(): void {
