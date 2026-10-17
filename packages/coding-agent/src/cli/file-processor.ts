@@ -15,6 +15,15 @@ export interface ProcessFileOptions {
 	autoResizeImages?: boolean;
 }
 
+/** A parent directory that denies search access reports EACCES, which is not a missing attachment. */
+export function accessErrorMessage(error: unknown, absolutePath: string): string {
+	const code = (error as NodeJS.ErrnoException | undefined)?.code;
+	if (code === "EACCES") {
+		return `Error: Permission denied: ${absolutePath}`;
+	}
+	return `Error: File not found: ${absolutePath}`;
+}
+
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	let text = "";
@@ -25,8 +34,8 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 
 		try {
 			await access(absolutePath);
-		} catch {
-			console.error(chalk.red(`Error: File not found: ${absolutePath}`));
+		} catch (error: unknown) {
+			console.error(chalk.red(accessErrorMessage(error, absolutePath)));
 			process.exit(1);
 		}
 
