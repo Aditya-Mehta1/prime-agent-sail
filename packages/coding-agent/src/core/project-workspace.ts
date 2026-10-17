@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-export const PROJECT_INPUT_NAME = "prime_project";
+export const PROJECT_INPUT_NAME = "project_context";
 
 const INITIAL_BRIEF = "# Project\n\n## Goal\n\n## Now\n\n## Details\n";
 
