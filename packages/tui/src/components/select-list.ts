@@ -123,6 +123,10 @@ export class SelectList implements Component {
 		} else if (kb.matches(keyData, "tui.select.down")) {
 			this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
 			this.notifySelectionChange();
+		} else if (kb.matches(keyData, "tui.select.pageUp")) {
+			this.moveSelectionByPage(-1);
+		} else if (kb.matches(keyData, "tui.select.pageDown")) {
+			this.moveSelectionByPage(1);
 		} else if (kb.matches(keyData, "tui.select.confirm")) {
 			const selectedItem = this.filteredItems[this.selectedIndex];
 			if (selectedItem && this.onSelect) {
@@ -133,6 +137,16 @@ export class SelectList implements Component {
 				this.onCancel();
 			}
 		}
+	}
+
+	private moveSelectionByPage(direction: -1 | 1): void {
+		const count = this.filteredItems.length;
+		if (count === 0) return;
+
+		const lastIndex = count - 1;
+		const target = this.selectedIndex + direction * this.maxVisible;
+		this.selectedIndex = clamp(target, 0, lastIndex);
+		this.notifySelectionChange();
 	}
 
 	private renderItem(
