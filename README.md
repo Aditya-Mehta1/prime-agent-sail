@@ -19,8 +19,6 @@ The foreground agent:
 
 ## How it works
 
-- `rlm.dispatch()` - new RLM primitive that starts a background worker in its own Sailbox and sets up a repo copy.
-
 ```mermaid
 flowchart LR
     U[User]
@@ -40,14 +38,19 @@ flowchart LR
     B <-->|Run code / read output| SB
 ```
 
-- `rlm.dispatch()` spawns a deepseek 4.1 flash subagent on Sail Balanced
+### `rlm.dispatch()` - new RLM primitive that starts a background worker in its own Sailbox and sets up a repo copy.
+
+`rlm.dispatch()` spawns a deepseek 4.1 flash subagent on Sail Balanced
+
 - its harness / inferences / controller run on the local prime daemon <sup>[1](#note-1)</sup>
+
 - each subagent's **REPL / file operations** work on Sailboxes which:
   - clone the working repo and workers can write PRs to it <sup>[2](#note-2)</sup>
   - autosleep when the agent is "idle"
   - when idled can be awoken by:
     - fg agent messaging the worker
     - cron jobs by the agent itself
+
 - each worker is also an RLM:
   - it can spawn children via `rlm.spawn()` which work on the same box
   - it can message parents / children / siblings
@@ -58,7 +61,7 @@ flowchart LR
 <a name="note-2"></a>
 <sup>2</sup> gh auth using [credential injection](https://docs.sailresearch.com/sailboxes-credentials)
 
-**Shared context:**
+### Worker Context
 
 ```text
 /workspace/
