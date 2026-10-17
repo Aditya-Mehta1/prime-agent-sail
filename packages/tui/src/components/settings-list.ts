@@ -1,4 +1,4 @@
-import { fuzzyFilter } from "../fuzzy.js";
+import { fuzzyFilterScored } from "../fuzzy.js";
 import { getKeybindings } from "../keybindings.js";
 import type { Component } from "../tui.js";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
@@ -29,6 +29,25 @@ export interface SettingsListTheme {
 
 export interface SettingsListOptions {
 	enableSearch?: boolean;
+}
+
+/**
+ * Filter settings by fuzzy match quality. Label matches rank before items that
+ * only match on their description, so description search stays additive.
+ */
+export function filterSettingsItems(items: SettingItem[], query: string): SettingItem[] {
+	if (!query.trim()) {
+		return items;
+	}
+	const labelMatches = fuzzyFilterScored(items, query, (item) => item.label);
+	const matchedIds = new Set(labelMatches.map((entry) => entry.item.id));
+	const descriptionMatches = fuzzyFilterScored(
+		items.filter((item) => item.description && !matchedIds.has(item.id)),
+		query,
+		(item) => item.description ?? "",
+	);
+	const matches = [...labelMatches, ...descriptionMatches];
+	return matches.map((entry) => entry.item);
 }
 
 export class SettingsList implements Component {
@@ -215,7 +234,7 @@ export class SettingsList implements Component {
 	}
 
 	private applyFilter(query: string): void {
-		this.filteredItems = fuzzyFilter(this.items, query, (item) => item.label);
+		this.filteredItems = filterSettingsItems(this.items, query);
 		this.selectedIndex = 0;
 	}
 
