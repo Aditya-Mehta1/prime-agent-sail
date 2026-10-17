@@ -80,7 +80,8 @@ export class SelectList implements Component {
 		const lines: string[] = [];
 
 		if (this.filteredItems.length === 0) {
-			lines.push(this.theme.noMatch("  No matching commands"));
+			const noMatchText = truncateToWidth("  No matching commands", width, "…");
+			lines.push(this.theme.noMatch(noMatchText));
 			return lines;
 		}
 
