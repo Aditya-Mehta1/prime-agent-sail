@@ -1,5 +1,6 @@
 import { fuzzyFilter } from "../fuzzy.js";
-import { getKeybindings } from "../keybindings.js";
+import { getKeybindings, type Keybinding } from "../keybindings.js";
+import type { KeyId } from "../keys.js";
 import type { Component } from "../tui.js";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 import { Input } from "./input.js";
@@ -29,6 +30,26 @@ export interface SettingsListTheme {
 
 export interface SettingsListOptions {
 	enableSearch?: boolean;
+}
+
+const KEY_LABEL_ABBREVIATIONS: Record<string, string> = {
+	escape: "Esc",
+	up: "↑",
+	down: "↓",
+	left: "←",
+	right: "→",
+};
+
+function formatKeyLabel(key: KeyId): string {
+	return key
+		.split("+")
+		.map((part) => KEY_LABEL_ABBREVIATIONS[part] ?? part.charAt(0).toUpperCase() + part.slice(1))
+		.join("+");
+}
+
+function formatKeybindingLabels(keybinding: Keybinding, primaryOnly = false): string {
+	const keys = getKeybindings().getKeys(keybinding);
+	return (primaryOnly ? keys.slice(0, 1) : keys).map(formatKeyLabel).join("/");
 }
 
 export class SettingsList implements Component {
@@ -170,18 +191,22 @@ export class SettingsList implements Component {
 		} else if (kb.matches(data, "tui.select.down")) {
 			if (displayItems.length === 0) return;
 			this.selectedIndex = this.selectedIndex === displayItems.length - 1 ? 0 : this.selectedIndex + 1;
-		} else if (kb.matches(data, "tui.select.confirm") || data === " ") {
+		} else if (kb.matches(data, "tui.select.confirm") || kb.matches(data, "tui.settings.activate")) {
 			this.activateItem();
 		} else if (kb.matches(data, "tui.select.cancel")) {
 			this.onCancel();
 		} else if (this.searchEnabled && this.searchInput) {
-			const sanitized = data.replace(/ /g, "");
+			const sanitized = this.spaceActivatesSetting() ? data.replace(/ /g, "") : data;
 			if (!sanitized) {
 				return;
 			}
 			this.searchInput.handleInput(sanitized);
 			this.applyFilter(this.searchInput.getValue());
 		}
+	}
+
+	private spaceActivatesSetting(): boolean {
+		return getKeybindings().getKeys("tui.settings.activate").includes("space");
 	}
 
 	private activateItem(): void {
@@ -220,16 +245,15 @@ export class SettingsList implements Component {
 	}
 
 	private addHintLine(lines: string[], width: number): void {
+		const changeKeys = (["tui.select.confirm", "tui.settings.activate"] as const)
+			.map((keybinding) => formatKeybindingLabels(keybinding))
+			.filter((labels) => labels.length > 0)
+			.join("/");
+		const cancelKeys = formatKeybindingLabels("tui.select.cancel", true);
+		const searchHint = this.searchEnabled ? "Type to search · " : "";
+		const changeHint = changeKeys.length > 0 ? `${changeKeys} to change · ` : "";
+		const cancelHint = cancelKeys.length > 0 ? `${cancelKeys} to cancel` : "";
 		lines.push("");
-		lines.push(
-			truncateToWidth(
-				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
-				),
-				width,
-			),
-		);
+		lines.push(truncateToWidth(this.theme.hint(`  ${searchHint}${changeHint}${cancelHint}`), width));
 	}
 }
