@@ -54,7 +54,7 @@ flowchart LR
   - it can message parents / children / siblings
 
 <a name="note-1"></a>
-<sup>[1]</sup> "separating the hands and the brain" has many benefits here [TODO - link to docs]
+<sup>[1]</sup> "separating the hands and the brain" has many benefits here
 
 <a name="note-2"></a>
 <sup>[2]</sup> gh auth using [credential injection](https://docs.sailresearch.com/sailboxes-credentials)
