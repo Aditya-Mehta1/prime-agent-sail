@@ -15,6 +15,26 @@ export interface ProcessFileOptions {
 	autoResizeImages?: boolean;
 }
 
+/**
+ * Characters that would end or corrupt the double-quoted `name` attribute, plus the whitespace
+ * XML normalizes away inside attribute values. File names may contain all of them on POSIX.
+ */
+const FILE_NAME_ATTRIBUTE_ESCAPES: Record<string, string> = {
+	"&": "&amp;",
+	"<": "&lt;",
+	">": "&gt;",
+	'"': "&quot;",
+	"'": "&#39;",
+	"\n": "&#10;",
+	"\r": "&#13;",
+	"\t": "&#9;",
+};
+
+/** Escape a path so it stays inside the double-quoted name attribute of attachment markup. */
+export function escapeFileNameAttribute(value: string): string {
+	return value.replace(/[&<>"'\n\r\t]/g, (char) => FILE_NAME_ATTRIBUTE_ESCAPES[char]);
+}
+
 export async function processFileArguments(fileArgs: string[], options?: ProcessFileOptions): Promise<ProcessedFiles> {
 	const autoResizeImages = options?.autoResizeImages ?? true;
 	let text = "";
@@ -22,6 +42,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 
 	for (const fileArg of fileArgs) {
 		const absolutePath = resolve(resolveReadPath(fileArg, process.cwd()));
+		const nameAttribute = escapeFileNameAttribute(absolutePath);
 
 		try {
 			await access(absolutePath);
@@ -47,7 +68,7 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			if (autoResizeImages) {
 				const resized = await resizeImage({ type: "image", data: base64Content, mimeType });
 				if (!resized) {
-					text += `<file name="${absolutePath}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
+					text += `<file name="${nameAttribute}">[Image omitted: could not be resized below the inline image size limit.]</file>\n`;
 					continue;
 				}
 				dimensionNote = formatDimensionNote(resized);
@@ -67,14 +88,14 @@ export async function processFileArguments(fileArgs: string[], options?: Process
 			images.push(attachment);
 
 			if (dimensionNote) {
-				text += `<file name="${absolutePath}">${dimensionNote}</file>\n`;
+				text += `<file name="${nameAttribute}">${dimensionNote}</file>\n`;
 			} else {
-				text += `<file name="${absolutePath}"></file>\n`;
+				text += `<file name="${nameAttribute}"></file>\n`;
 			}
 		} else {
 			try {
 				const content = await readFile(absolutePath, "utf-8");
-				text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
+				text += `<file name="${nameAttribute}">\n${content}\n</file>\n`;
 			} catch (error: unknown) {
 				const message = error instanceof Error ? error.message : String(error);
 				console.error(chalk.red(`Error: Could not read file ${absolutePath}: ${message}`));
