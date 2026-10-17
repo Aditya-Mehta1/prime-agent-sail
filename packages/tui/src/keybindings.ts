@@ -40,6 +40,7 @@ export interface Keybindings {
 	"tui.select.pageDown": true;
 	"tui.select.confirm": true;
 	"tui.select.cancel": true;
+	"tui.settings.activate": true;
 }
 
 export type Keybinding = keyof Keybindings;
@@ -166,6 +167,10 @@ export const TUI_KEYBINDINGS = {
 	"tui.select.cancel": {
 		defaultKeys: ["escape", "ctrl+c"],
 		description: "Cancel selection",
+	},
+	"tui.settings.activate": {
+		defaultKeys: "space",
+		description: "Activate selected setting",
 	},
 } as const satisfies KeybindingDefinitions;
 

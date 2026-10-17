@@ -77,6 +77,7 @@ Modifier combinations: `ctrl+shift+x`, `alt+ctrl+x`, `ctrl+shift+alt+x`, `ctrl+1
 | `tui.select.pageDown` | `pageDown` | Page down in list |
 | `tui.select.confirm` | `enter` | Confirm selection |
 | `tui.select.cancel` | `escape`, `ctrl+c` | Cancel selection |
+| `tui.settings.activate` | `space` | Activate the selected setting (cycle value or open submenu) |
 
 ### TUI Fullscreen Transcript
 

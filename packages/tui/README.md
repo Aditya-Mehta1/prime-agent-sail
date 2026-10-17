@@ -501,7 +501,7 @@ settings.updateValue("theme", "light");
 
 **Controls:**
 - Arrow keys: Navigate
-- Enter/Space: Activate (cycle value or open submenu)
+- Enter/Space: Activate (cycle value or open submenu). Space is bound to `tui.settings.activate`
 - Escape: Cancel
 
 ### Spacer
