@@ -205,6 +205,56 @@ async def dispatch(
     return _spawn_handle_from_payload(payload)
 
 
+def _file_path(value: str | Path, *, local: bool = False) -> str:
+    if not isinstance(value, (str, Path)):
+        raise TypeError("path must be str or Path")
+    path = str(value)
+    if not path or "\0" in path:
+        raise ValueError("path must be non-empty and contain no NUL characters")
+    return str(Path(path).absolute()) if local else path
+
+
+async def ls(name: str, path: str | Path = ".") -> str:
+    """List a dispatched worker's directory, one name per line; directories end in ``/``.
+
+    Relative paths resolve against the worker's starting directory.
+    """
+    payload = await host_request("rlm.files", {
+        "operation": "ls", "name": name, "remotePath": _file_path(path),
+    })
+    entries = payload.get("entries")
+    if not isinstance(entries, list):
+        raise RuntimeError("rlm.ls returned an invalid entries list")
+    return "\n".join(sorted(
+        entry["name"] + ("/" if entry["type"] == "directory" else "")
+        for entry in entries
+    ))
+
+
+async def upload(name: str, local_path: str | Path, remote_path: str | Path) -> None:
+    """Copy a local file or folder to a dispatched worker.
+
+    ``local_path`` resolves against this cwd and ``remote_path`` against the
+    worker's starting directory. A folder's contents merge into ``remote_path``.
+    """
+    await host_request("rlm.files", {
+        "operation": "upload", "name": name,
+        "localPath": _file_path(local_path, local=True), "remotePath": _file_path(remote_path),
+    })
+
+
+async def download(name: str, remote_path: str | Path, local_path: str | Path) -> None:
+    """Copy a file or folder from a dispatched worker to this machine.
+
+    ``remote_path`` resolves against the worker's starting directory and
+    ``local_path`` against this cwd. A folder's contents merge into ``local_path``.
+    """
+    await host_request("rlm.files", {
+        "operation": "download", "name": name,
+        "remotePath": _file_path(remote_path), "localPath": _file_path(local_path, local=True),
+    })
+
+
 def _model_from_payload(payload: Any) -> RLMModel:
     if not isinstance(payload, dict):
         raise RuntimeError("rlm.find_models returned an invalid model entry")
@@ -551,6 +601,9 @@ _harness_state = _HarnessProxy()
 class _RLMNamespace:
     harness = _harness_state
     get_harness_state = staticmethod(get_harness_state)
+    ls = staticmethod(ls)
+    upload = staticmethod(upload)
+    download = staticmethod(download)
 
     async def spawn(
         self,
@@ -635,15 +688,18 @@ __all__ = [
     "bash",
     "delete_subagent",
     "dispatch",
+    "download",
     "emit",
     "find_models",
     "get_harness_state",
     "harness",
     "host_request",
     "list_subagents",
+    "ls",
     "progress_note",
     "rlm",
     "spawn",
+    "upload",
 ]
 
 # Lazily re-export the generic MCP error type. Kept lazy so `import rlm` never

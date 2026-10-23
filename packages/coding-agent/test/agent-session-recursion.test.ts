@@ -26,6 +26,7 @@ import {
 	type RlmChildAgentSnapshot,
 } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import { SailClient } from "../src/core/dispatch/sail-client.js";
 import type { LoadExtensionsResult } from "../src/core/extensions/index.js";
 import { type HostRequestHandler, type HostRequestHandlers, ReplKernelManager } from "../src/core/kernel/index.js";
 import { ASYNC_BASH_COMPLETION_CUSTOM_TYPE, convertToLlm } from "../src/core/messages.js";
@@ -52,17 +53,17 @@ function userText(context: Context): string {
 	const lastMessage = context.messages[context.messages.length - 1] as AgentMessage | undefined;
 	if (!lastMessage) return "";
 	if (isAgentSessionMessage(lastMessage)) {
-		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "");
+		return lastMessage.details.message;
 	}
 	if (lastMessage.role !== "user") return "";
 	if (typeof lastMessage.content === "string") {
-		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "");
+		return lastMessage.content.replace(/^\[task from parent\]\n\n/, "").split("\n\nProject context:")[0]!;
 	}
 	const text = lastMessage.content
 		.filter((block): block is TextContent => block.type === "text")
 		.map((block) => block.text)
 		.join("\n");
-	return text.replace(/^\[task from parent\]\n\n/, "");
+	return text.replace(/^\[task from parent\]\n\n/, "").split("\n\nProject context:")[0]!;
 }
 
 function usage(input = 7, output = 3): Usage {
@@ -589,6 +590,67 @@ describe("AgentSession rlm recursion", () => {
 		unblockUnwind.resolve();
 	});
 
+	it.each(["ready", "deleted", "failed"])("waits for worker preparation before file download: %s", async (outcome) => {
+		const preparation = deferred<{ session: AgentSession }>();
+		const { root, hostedChild } = createStartupGatedRoot({
+			createRlmSubagentRuntime: () => preparation.promise,
+		});
+		const task = deferred<void>();
+		vi.spyOn(hostedChild, "promptAndWait").mockImplementation(() => task.promise);
+		const worker = await root.runRlmChild("prepare files", { name: "file-worker" });
+		const run = (root as unknown as InspectableRlmSession)._activeRlmChildRuns.get(worker.rlm_child_id)!;
+		const waiting = deferred<void>();
+		const publication = run.publication!.promise;
+		Object.defineProperty(run.publication, "promise", {
+			get: () => {
+				waiting.resolve();
+				return publication;
+			},
+		});
+		const binding = JSON.stringify({ ownsBox: true, boxId: "box", guestCwd: "/work" });
+		writeFileSync(join(worker.session_dir, "dispatch.json"), binding);
+		const destination = join(tempDir, "downloaded");
+		const download = vi.spyOn(SailClient.prototype, "download").mockImplementation(async (box, remote, local) => {
+			writeFileSync(local, readFileSync(join(tempDir, box, remote)));
+		});
+		await root.setRlmMaxDepth(0);
+		const pending = hostHandler(
+			root,
+			"rlm.files",
+		)({ operation: "download", name: "file-worker", remotePath: "../tmp/report", localPath: destination });
+		const result = pending.catch((error: unknown) => error);
+		try {
+			await Promise.race([waiting.promise, pending]);
+			expect(() => readFileSync(destination)).toThrow();
+			if (outcome === "deleted") {
+				await root.deleteRlmSubagent("file-worker");
+				const replacementDir = join(tempDir, "replacement");
+				const replacement = createSession({ rlmSessionDir: replacementDir });
+				replacement.setSessionName("file-worker");
+				writeFileSync(join(replacementDir, "dispatch.json"), binding);
+				root.registerRlmChildSession("replacement", replacement);
+				session = root;
+			}
+			if (outcome === "failed") preparation.reject(new Error("preparation failed"));
+			mkdirSync(join(tempDir, "box", "tmp"), { recursive: true });
+			writeFileSync(join(tempDir, "box", "tmp", "report"), "worker output");
+			preparation.resolve({ session: hostedChild });
+			if (outcome === "ready") {
+				expect(await result).toEqual({});
+				expect(readFileSync(destination, "utf8")).toBe("worker output");
+			} else {
+				expect(await result).toBeInstanceOf(Error);
+				expect(() => readFileSync(destination)).toThrow();
+			}
+		} finally {
+			preparation.resolve({ session: hostedChild });
+			task.resolve();
+			download.mockRestore();
+			await root.waitForRlmQuiescence();
+			hostedChild.dispose();
+		}
+	});
+
 	it("makes an externally restored retained child listable and deletable", async () => {
 		const childId = "restored-child";
 		const childDir = join(tempDir, childId);
@@ -698,7 +760,7 @@ describe("AgentSession rlm recursion", () => {
 		expect(child?.messages[1]).toMatchObject({
 			role: "custom",
 			customType: "agent_message",
-			content: "[task from parent]\n\nsummarize shard 1",
+			content: expect.stringContaining("[task from parent]\n\nsummarize shard 1"),
 			display: true,
 			details: {
 				id: `spawn:${result.rlm_child_id}`,
@@ -1919,6 +1981,10 @@ describe("AgentSession rlm recursion", () => {
 			},
 		});
 		await expect(nested.createRlmSession("escape to root")).rejects.toThrow("available only from a depth-0 session");
+		await expect(nested.accessRlmFiles({ operation: "ls", name: "worker", remotePath: "/tmp" })).rejects.toThrow(
+			"local foreground",
+		);
+		expect((nested as unknown as InspectableRlmSession)._createKernelHostHandlers()["rlm.files"]).toBeUndefined();
 		expect(createRlmRootSession).not.toHaveBeenCalled();
 		nested.dispose();
 

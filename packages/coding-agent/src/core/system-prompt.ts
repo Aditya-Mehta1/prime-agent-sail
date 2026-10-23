@@ -3,7 +3,7 @@
  */
 
 import { buildChildAgentDoctrine, buildRlmPrompt, buildSubagentGuidance } from "./prompts/index.js";
-import { RLM_FOREGROUND_PROMPT } from "./prompts/rlm-foreground.js";
+import { RLM_FOREGROUND_FILES_PROMPT, RLM_FOREGROUND_PROMPT } from "./prompts/rlm-foreground.js";
 import { REFINE_SKILL_NAME } from "./refinement/index.js";
 import { formatSkillsForPrompt, getPythonSkillRuntimeInfo, type Skill } from "./skills.js";
 
@@ -65,7 +65,9 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions): string {
 	const hasIpython = tools.includes("ipython");
 	const foregroundSection =
 		(options.rlmDepth ?? 0) === 0 && (allowRecursion ?? true) && hasIpython ? RLM_FOREGROUND_PROMPT : "";
-	const appendSection = [foregroundSection, appendSystemPrompt]
+	const fileSection =
+		(options.rlmDepth ?? 0) === 0 && !options.remoteExecution && hasIpython ? RLM_FOREGROUND_FILES_PROMPT : "";
+	const appendSection = [foregroundSection, fileSection, appendSystemPrompt]
 		.filter(Boolean)
 		.map((section) => `\n\n${section}`)
 		.join("");

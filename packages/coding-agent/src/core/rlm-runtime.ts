@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
 import type { AgentSession, RlmChildAgentStatus } from "./agent-session.js";
@@ -311,6 +312,39 @@ export function createRlmRunHostHandler(handler: RlmRunHandler, operation = "rlm
 			cellSourceCode,
 		});
 		return result as unknown as Record<string, unknown>;
+	};
+}
+
+export type RlmFileRequest =
+	| { operation: "ls"; name: string; remotePath: string }
+	| { operation: "upload" | "download"; name: string; remotePath: string; localPath: string };
+
+export function createRlmFileHostHandler(
+	handler: (request: RlmFileRequest) => Promise<Record<string, unknown>>,
+): HostRequestHandler {
+	return async (payload) => {
+		const { operation } = payload;
+		if (operation !== "ls" && operation !== "upload" && operation !== "download") {
+			throw new Error("rlm.files operation must be ls, upload, or download");
+		}
+		const name = normalizeRequestedRlmSubagentSessionName(payload.name, `rlm.${operation}`);
+		if (!name) throw new Error(`rlm.${operation} requires a worker name`);
+		const path = (key: "remotePath" | "localPath"): string => {
+			const value = payload[key];
+			if (typeof value !== "string" || !value || value.includes("\0")) {
+				throw new Error(`rlm.${operation} ${key} must be a non-empty path without NUL characters`);
+			}
+			if (key === "localPath" && !isAbsolute(value)) {
+				throw new Error(`rlm.${operation} localPath must be absolute (resolved against the Python cwd)`);
+			}
+			return value;
+		};
+		const remotePath = path("remotePath");
+		return handler(
+			operation === "ls"
+				? { operation, name, remotePath }
+				: { operation, name, remotePath, localPath: path("localPath") },
+		);
 	};
 }
 

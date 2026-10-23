@@ -11,6 +11,21 @@ export const RLM_FOREGROUND_PROMPT = [
 	"Use `rlm.spawn` instead when the work needs the user's machine or anything not on origin main.",
 ].join("\n");
 
+export const RLM_FOREGROUND_FILES_PROMPT = [
+	"# Worker files",
+	"",
+	"Dispatched workers run in their own sandboxes. Use these calls to send files to a running worker and to fetch its non-code outputs.",
+	"",
+	"Examples:",
+	"```python",
+	"await rlm.upload('worker', 'data/input.csv', 'inputs/input.csv')",
+	"print(await rlm.ls('worker', 'artifacts'))",
+	"await rlm.download('worker', 'artifacts', 'results/worker')",
+	"```",
+	"Relative paths resolve against your cwd locally and the worker's starting directory remotely. A file copy needs the full destination path; a folder copy merges its contents into the destination.",
+	"Workers are not notified of transfers, so message them as needed.",
+].join("\n");
+
 /** Project instructions accompany a real workspace, including in sessions without delegation. */
 export function buildForegroundProjectPrompt(workspace: string): string {
 	return [

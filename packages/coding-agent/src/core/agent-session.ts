@@ -2,7 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, posix, relative, resolve, sep } from "node:path";
 import {
 	Agent,
 	type AgentContext,
@@ -135,7 +135,9 @@ import {
 	normalizeHeartbeatDeliveryMode,
 } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
+import { SailClient } from "./dispatch/sail-client.js";
 import type { DispatchBinding } from "./dispatch/types.js";
+import { loadDispatchBinding } from "./dispatch/workspace.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import {
@@ -276,6 +278,7 @@ import {
 	createRlmCollectHostHandler,
 	createRlmCreateSessionHostHandler,
 	createRlmDeleteSubagentHostHandler,
+	createRlmFileHostHandler,
 	createRlmFindModelsHostHandler,
 	createRlmListSubagentsHostHandler,
 	createRlmProgressNoteHostHandler,
@@ -292,6 +295,7 @@ import {
 	type RlmCreateSessionResult,
 	type RlmDeleteSubagentResult,
 	type RlmDispatchOptions,
+	type RlmFileRequest,
 	type RlmFindModelsResult,
 	type RlmListSubagentsResult,
 	type RlmProgressNoteResult,
@@ -11062,6 +11066,9 @@ export class AgentSession {
 				input: this.model?.input ?? [],
 			}),
 		};
+		if (this._rlmDepth === 0 && !this.dispatchBinding) {
+			handlers["rlm.files"] = createRlmFileHostHandler((request) => this.accessRlmFiles(request));
+		}
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);
@@ -11487,6 +11494,39 @@ export class AgentSession {
 		this._lastRlmProgressNoteAt = now;
 		this._emit({ type: "rlm_progress_note", message, timestamp: now });
 		return { accepted: true, retry_after_ms: undefined };
+	}
+
+	async accessRlmFiles(request: RlmFileRequest): Promise<Record<string, unknown>> {
+		if (this._rlmDepth !== 0 || this.dispatchBinding) {
+			throw new Error("RLM file access is available only to the local foreground agent (depth 0)");
+		}
+		if (this._disposed || this._disposing) throw new Error("The foreground session is disposed");
+		const matches = (await this.listRlmSubagents()).subagents.filter((entry) => entry.session_name === request.name);
+		if (matches.length === 0) throw new Error(`No direct worker named "${request.name}"`);
+		if (matches.length > 1) throw new Error(`Worker name "${request.name}" is ambiguous`);
+		const target = matches[0]!;
+		const run = this._activeRlmChildRuns.get(target.rlm_child_id);
+		await run?.publication.promise;
+		const retained = (await this.listRlmSubagents()).subagents.some(
+			(entry) => entry.rlm_child_id === target.rlm_child_id,
+		);
+		if (
+			!retained ||
+			this._deletedRlmChildIds.has(target.rlm_child_id) ||
+			this._deletingRlmChildren.has(target.rlm_child_id) ||
+			this._disposed ||
+			this._disposing
+		) {
+			throw new Error("Worker was deleted or became unavailable while preparing file access");
+		}
+		const binding = loadDispatchBinding(target.session_dir);
+		if (!binding) throw new Error("Worker runs locally and has no Sailbox dispatch binding");
+		const remotePath = posix.resolve(binding.guestCwd, request.remotePath);
+		const client = new SailClient();
+		if (request.operation === "ls") return { entries: await client.ls(binding.boxId, remotePath) };
+		if (request.operation === "upload") await client.upload(binding.boxId, request.localPath, remotePath);
+		else await client.download(binding.boxId, remotePath, request.localPath);
+		return {};
 	}
 
 	async listRlmSubagents(): Promise<RlmListSubagentsResult> {
