@@ -100,3 +100,5 @@ prime-agent-sail
 ```
 
 Needs macOS or Linux, Node 22.8+, and Sail API key
+
+Port forwarding needs the Sail CLI and OpenSSH on `PATH`, plus `~/.ssh/id_ed25519` or `~/.ssh/id_rsa`; unlock passphrase-protected keys with `ssh-add`.
