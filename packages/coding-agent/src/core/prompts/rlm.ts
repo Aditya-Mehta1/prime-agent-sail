@@ -166,7 +166,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 			"",
 			"An `rlm` object is already in your global namespace. `await rlm.spawn('sub-task', name='api-reviewer')` spawns a child and returns immediately after task admission with `rlm_child_id`, `name`, `session_dir`, and `model`; it never waits for or returns the child's answer.",
 			"`name` is required: choose a stable child name that is unique among siblings.",
-			"`spawn` shares your workspace (and your Sailbox when remote), with a separate Python kernel and variables.",
+			"`spawn` shares your workspace with a separate Python kernel and variables.",
 			"A child inherits your model. If a different model is explicitly requested, use `await rlm.find_models(...)` and an exact returned selector. An unavailable requested model fails spawn; decide whether to retry or omit `model`. Children also inherit your thinking level; the `thinking` option overrides it with any level the resolved child model supports, and an unsupported level fails spawn.",
 		);
 		parts.push(
@@ -203,7 +203,7 @@ export function buildRlmPrompt(options: RlmPromptOptions): string {
 		);
 		if (options.remoteExecution) {
 			parts.push(
-				"Your Python and files run in a Sailbox. Send results through agent_message; use Git for code delivery. The box remains available while idle and is removed when the child is killed.",
+				"Your Python and files run in a sandbox. You may install any packages, tools, or system dependencies needed for your task without asking the parent; install project dependencies in the project's own environment and retry after resolving missing dependencies. Send results through agent_message; use Git for code delivery. The box remains available while idle and is removed when the child is killed.",
 			);
 		}
 		if (installedSkills.includes("refine")) {
