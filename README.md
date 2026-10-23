@@ -80,12 +80,24 @@ flowchart LR
 
 https://github.com/user-attachments/assets/0d77f48b-c22a-4eba-bf6c-3d88046c3001
 
-
-### Crons on remote agents just work :)
+<table>
+<tr>
+<th width="50%">Crons on remote agents just work :)</th>
+<th width="50%">Share files between remote workers and local</th>
+</tr>
+<tr>
+<td width="50%">
 
 https://github.com/user-attachments/assets/95536922-28be-4614-993c-639074e1d43b
 
+</td>
+<td width="50%">
 
+<video src="https://github.com/Aditya-Mehta1/prime-agent-sail/raw/main/docs/assets/file-transfer_v1.mp4" controls width="100%"></video>
+
+</td>
+</tr>
+</table>
 
 ## Try it
 
