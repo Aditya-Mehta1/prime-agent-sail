@@ -12,7 +12,7 @@ import { getSessionArtifactPathForFile } from "./session-manager.js";
 export type DeleteSessionFileResult = { ok: true; method: "trash" | "unlink" } | { ok: false; error: string };
 
 export interface DeleteSessionFileOptions {
-	afterFileRemoved?: () => void;
+	afterFileRemoved?: () => void | Promise<void>;
 }
 
 export async function cleanupSessionDispatchWorkspaces(
@@ -111,7 +111,7 @@ export async function deleteSessionFile(
 	}
 	const result = await removeSessionFile(sessionPath);
 	if (result.ok) {
-		options.afterFileRemoved?.();
+		await options.afterFileRemoved?.();
 		if (basename(sessionPath).replace(/\.jsonl$/, "")) {
 			await rm(getSessionArtifactPathForFile(sessionPath), { recursive: true, force: true });
 		}

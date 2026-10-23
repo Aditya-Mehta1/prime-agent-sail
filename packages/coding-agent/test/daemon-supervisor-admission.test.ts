@@ -81,6 +81,14 @@ function createHarness(
 		},
 		workers: new Map(),
 		clients: new Set(),
+		defaultSessionConfig: { sessionDir: tmpdir() },
+		catalog: { list: async () => [] },
+		roster: () => new Map(),
+		stopWorker: async () => undefined,
+		hasPersistedWorkerDescriptors: () => true,
+		signalCleanupHandlers: [],
+		scheduleIdleEvictionSweep: vi.fn(),
+		scheduleScheduledSessionWakeRecompute: vi.fn(),
 		connectionIds: new WeakMap(),
 		sessionInputPauseEpochs: new WeakMap(),
 		detachingInputPauseSessions: new WeakMap(),
@@ -719,5 +727,41 @@ describe("daemon supervisor prompt admission ownership", () => {
 		expect(deliveredPrompt).toHaveBeenCalledOnce();
 		expect(admissionFor(supervisor, owner)).toBeUndefined();
 		expect(forwarded.filter((command) => command.type === "prompt")).toHaveLength(1);
+	});
+
+	it("notifies clients before stopping workers and passes the requested force flag", async () => {
+		const createShutdownSupervisor = (updateRestartPhase?: "prepared") => {
+			const events: unknown[] = [];
+			const exited = deferred<void>();
+			const worker = { descriptor: { createCommand: {} } };
+			const supervisor = Object.assign(createHarness({ updateRestartPhase }), {
+				workers: new Map([["worker", worker]]),
+				stopWorker: vi.fn(async (_worker: unknown, _removeDescriptor: boolean, force: boolean) => {
+					events.push({ type: "worker_stop", force });
+				}),
+				write: (_owner: DaemonSocketClient, frame: unknown) => events.push(frame),
+				finishShutdown: async () => exited.resolve(),
+			});
+			return { supervisor, events, exited };
+		};
+		const update = createShutdownSupervisor("prepared");
+		const plain = createShutdownSupervisor();
+		const owner = client("shutdown-requester");
+		update.supervisor.clients.add(owner);
+		plain.supervisor.clients.add(owner);
+
+		await update.supervisor.handleLine(owner, commandLine({ id: "shutdown-1", type: "shutdown" }));
+		await update.exited.promise;
+		await plain.supervisor.handleLine(owner, commandLine({ id: "shutdown-2", type: "shutdown", force: true }));
+		await plain.exited.promise;
+
+		expect(update.events.slice(0, 2)).toEqual([
+			{ type: "daemon_closing", reason: "update" },
+			{ type: "worker_stop", force: false },
+		]);
+		expect(plain.events.slice(0, 2)).toEqual([
+			{ type: "daemon_closing", reason: "shutdown" },
+			{ type: "worker_stop", force: true },
+		]);
 	});
 });

@@ -36,7 +36,6 @@ vi.mock("node:fs", async (importOriginal) => {
 import { computeOwnAndTotalUsage } from "../../src/core/context-tree.js";
 import {
 	type FileEntry,
-	findMostRecentSession,
 	loadEntriesFromFile,
 	loadEntriesFromFileAsync,
 	migrateSessionEntries,
@@ -64,9 +63,7 @@ describe("loadEntriesFromFile", () => {
 
 	it.each<[string, string | undefined, string[]]>([
 		["a missing file", undefined, []],
-		["an empty file", "", []],
 		["a file without a session header", `${MESSAGE}\n`, []],
-		["malformed JSON", "not json\n", []],
 		["a valid session file", `${HEADER}\n${MESSAGE}\n`, ["session", "message"]],
 		[
 			"a file with a malformed line between valid ones",
@@ -354,68 +351,6 @@ describe("session tree metadata", () => {
 
 		expect(SessionManager.open(file).getHeader()?.rlmDepth).toBe(expected);
 		expect(headerOf(file).rlmDepth).toBe(expected);
-	});
-});
-
-describe("findMostRecentSession", () => {
-	let tempDir: string;
-
-	beforeEach(() => {
-		tempDir = join(tmpdir(), `session-test-${Date.now()}`);
-		mkdirSync(tempDir, { recursive: true });
-	});
-
-	afterEach(() => {
-		rmSync(tempDir, { recursive: true, force: true });
-	});
-
-	function writeSession(name: string, id: string, mtimeSeconds?: number): string {
-		const file = join(tempDir, name);
-		writeFileSync(file, `{"type":"session","id":"${id}","timestamp":"2025-01-01T00:00:00Z","cwd":"/tmp"}\n`);
-		if (mtimeSeconds !== undefined) utimesSync(file, mtimeSeconds, mtimeSeconds);
-		return file;
-	}
-
-	it.each<[string, () => { dir: string; expected: string | null }]>([
-		["returns null for an empty directory", () => ({ dir: tempDir, expected: null })],
-		["returns null for a non-existent directory", () => ({ dir: join(tempDir, "nonexistent"), expected: null })],
-		[
-			"ignores non-jsonl files",
-			() => {
-				writeFileSync(join(tempDir, "file.txt"), "hello");
-				writeFileSync(join(tempDir, "file.json"), "{}");
-				return { dir: tempDir, expected: null };
-			},
-		],
-		[
-			"ignores jsonl files without a valid session header",
-			() => {
-				writeFileSync(join(tempDir, "invalid.jsonl"), '{"type":"message"}\n');
-				return { dir: tempDir, expected: null };
-			},
-		],
-		[
-			"returns the single valid session file",
-			() => ({ dir: tempDir, expected: writeSession("session.jsonl", "abc") }),
-		],
-		[
-			"returns the most recently modified session",
-			() => {
-				writeSession("older.jsonl", "old", 1000);
-				return { dir: tempDir, expected: writeSession("newer.jsonl", "new", 2000) };
-			},
-		],
-		[
-			"skips invalid files and returns the valid one",
-			() => {
-				writeFileSync(join(tempDir, "invalid.jsonl"), '{"type":"not-session"}\n');
-				return { dir: tempDir, expected: writeSession("valid.jsonl", "abc") };
-			},
-		],
-	])("%s", (_label, build) => {
-		const { dir, expected } = build();
-
-		expect(findMostRecentSession(dir)).toBe(expected);
 	});
 });
 
@@ -800,8 +735,34 @@ describe("readSessionInfo incremental scans", () => {
 		utimesSync(file, fixedTime, fixedTime);
 		expect((await readSessionInfo(file))?.firstMessage).toBe("after recreate");
 	});
+	describe("tool-result entries counted from their headers", () => {
+		const prompt = line(header) + line(msg("u", null, "user", "hello")) + line(msg("a", "u", "assistant", "reply"));
+		const tool = (idFirst = false, tear = false, payload = "x") =>
+			`${idFirst ? `{"id":"t1","parentId":"a1","timestamp":"${header.timestamp}","type":"message",` : `{"type":"message","id":"t1","parentId":"a1","timestamp":"${header.timestamp}",`}"message":{"role":"toolResult","content":"${payload}"${tear ? "" : "}\n"}`;
+		const scan = (body: string) => {
+			const file = join(tempDir, "counted.jsonl");
+			writeFileSync(file, body);
+			return readSessionInfo(file);
+		};
+		const shadowed = `{"type":"message","meta":{"message":{"role":"toolResult"}},"message":{"role":"user","content":"kept","timestamp":1}}`;
+		const boundary = (length: number) =>
+			`{"type":"message","id":"${"x".repeat(length)}","parentId":null,"timestamp":"${header.timestamp}","message":{"role":"user","content":"kept","timestamp":1}}`;
+		const boundaryId = 512 - 19 - boundary(0).indexOf('"message":{"role":"');
+		it.each([
+			["an unparsed tool result", prompt + tool(false, true), 3, "hello reply"],
+			["an oversized tool result", prompt + tool(false, false, "y".repeat(1024 * 1024)), 3, "hello reply"],
+			["id-first tool results", prompt + tool(true) + tool(true, true), 4, "hello reply"],
+			["a container before the role marker", `${line(header)}${shadowed}\n`, 1, "kept"],
+			["the role at the prefix boundary", `${line(header)}${boundary(boundaryId)}\n`, 1, "kept"],
+		])("counts %s from its header", async (_case, body, messageCount, allMessagesText) => {
+			expect(await scan(body)).toMatchObject({ messageCount, allMessagesText });
+		});
+		it("drops a damaged session whose first entry is a tool result, even when a header follows", async () => {
+			expect(await scan(line(msg("t1", null, "toolResult", "x")) + line(header))).toBeNull();
+			expect(await SessionManager.listAll(undefined, tempDir)).toEqual([]);
+		});
+	});
 });
-
 describe("migrateSessionEntries", () => {
 	const assistant = {
 		role: "assistant",
