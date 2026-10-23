@@ -4,6 +4,32 @@ import { describe, expect, it } from "vitest";
 import { normalizeRlmDispatchInputs } from "../src/core/rlm-runtime.js";
 
 describe("RLM dispatch protocol", () => {
+	it("returns directory listings as printable text", () => {
+		const child = spawnSync(
+			"python3",
+			[
+				"-c",
+				`import asyncio, json, rlm
+async def request(kind, payload):
+    return {"entries": [] if payload["remotePath"] == "empty" else [
+        {"name": "report ü.md", "type": "file"},
+        {"name": "data", "type": "directory"},
+    ]}
+rlm.host_request = request
+async def main():
+    print(json.dumps([await rlm.rlm.ls("worker"), await rlm.ls("worker", "empty")]))
+asyncio.run(main())`,
+			],
+			{
+				env: { ...process.env, PYTHONPATH: resolve("../../prime-agent-runtime/src") },
+				encoding: "utf8",
+				timeout: 10_000,
+			},
+		);
+		expect(child.status, child.stderr).toBe(0);
+		expect(JSON.parse(child.stdout)).toEqual(["data/\nreport ü.md", ""]);
+	});
+
 	it("serializes Python dispatch arguments and preserves the existing handle and spawn wire contract", () => {
 		const program = `import asyncio, json, sys, types
 from pathlib import Path

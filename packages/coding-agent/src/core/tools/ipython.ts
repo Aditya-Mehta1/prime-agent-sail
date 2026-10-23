@@ -64,6 +64,15 @@ except Exception as _prime_agent_rlm_error:
         async def delete_subagent(self, target):
             self._raise_missing()
 
+        async def ls(self, name, path="."):
+            self._raise_missing()
+
+        async def upload(self, name, local_path, remote_path):
+            self._raise_missing()
+
+        async def download(self, name, remote_path, local_path):
+            self._raise_missing()
+
     rlm = _PrimeAgentMissingRlm()
 
     def bash(command):
