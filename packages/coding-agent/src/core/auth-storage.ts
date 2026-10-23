@@ -294,6 +294,7 @@ export class AuthStorage {
 	private fallbackResolver?: (provider: string) => string | undefined;
 	private loadError: Error | null = null;
 	private errors: Error[] = [];
+	private changeListeners = new Set<() => void>();
 
 	private constructor(
 		private storage: AuthStorageBackend,
@@ -317,6 +318,15 @@ export class AuthStorage {
 		return AuthStorage.fromStorage(storage, options);
 	}
 
+	onChange(listener: () => void): () => void {
+		this.changeListeners.add(listener);
+		return () => this.changeListeners.delete(listener);
+	}
+
+	private notifyChanged(): void {
+		for (const listener of this.changeListeners) listener();
+	}
+
 	/**
 	 * Set a runtime API key override (not persisted to disk).
 	 * Used for CLI --api-key flag.
@@ -325,6 +335,7 @@ export class AuthStorage {
 		provider = credentialProvider(provider);
 		this.clearStaleAuthSource(provider, "runtime");
 		this.runtimeOverrides.set(provider, apiKey);
+		this.notifyChanged();
 	}
 
 	/**
@@ -334,6 +345,7 @@ export class AuthStorage {
 		provider = credentialProvider(provider);
 		this.clearStaleAuthSource(provider, "runtime");
 		this.runtimeOverrides.delete(provider);
+		this.notifyChanged();
 	}
 
 	/**
@@ -342,6 +354,7 @@ export class AuthStorage {
 	 */
 	setFallbackResolver(resolver: (provider: string) => string | undefined): void {
 		this.fallbackResolver = resolver;
+		this.notifyChanged();
 	}
 
 	private recordError(error: unknown): void {
@@ -425,7 +438,7 @@ export class AuthStorage {
 
 	private getStoredAuthCandidate(
 		provider: string,
-		options?: { resolveCommandValue?: boolean; resolvedCommandValue?: string },
+		options?: { resolvedCommandValue?: string },
 	): AuthSourceCandidate | undefined {
 		const credential = this.data[provider];
 		if (!credential) {
@@ -443,9 +456,7 @@ export class AuthStorage {
 			identityMaterial,
 			valueMaterial:
 				commandValueMaterial ??
-				(isCommandApiKey && !options?.resolveCommandValue
-					? undefined
-					: this.getStoredCredentialValueMaterial(provider, credential)),
+				(isCommandApiKey ? undefined : this.getStoredCredentialValueMaterial(provider, credential)),
 			resolveValueMaterial: isCommandApiKey
 				? () => this.getStoredCredentialValueMaterial(provider, credential)
 				: undefined,
@@ -632,13 +643,14 @@ export class AuthStorage {
 			stale.push(token);
 		}
 		this.staleAuthSources.set(token.provider, stale);
+		this.notifyChanged();
 		return true;
 	}
 
 	/** Forget every stale marking for a provider (explicit user re-selection). */
 	clearAuthStale(provider: string): void {
 		provider = credentialProvider(provider);
-		this.staleAuthSources.delete(provider);
+		if (this.staleAuthSources.delete(provider)) this.notifyChanged();
 	}
 
 	private clearStaleAuthSource(provider: string, source: ActiveAuthStatusSource): void {
@@ -720,6 +732,7 @@ export class AuthStorage {
 		this.clearStaleAuthSource(provider, "stored");
 		this.data[provider] = credential;
 		this.persistProviderChange(provider, credential);
+		this.notifyChanged();
 	}
 
 	/**
@@ -730,6 +743,7 @@ export class AuthStorage {
 		this.clearStaleAuthSource(provider, "stored");
 		delete this.data[provider];
 		this.persistProviderChange(provider, undefined);
+		this.notifyChanged();
 	}
 
 	/**
@@ -1252,8 +1266,13 @@ export class AuthStorage {
 
 	getPrimeInferenceTeamSelection(): PrimeTeamCredential | null | undefined {
 		if (process.env.PRIME_TEAM_ID?.trim()) return undefined;
-		const authSource = this.getAuthStatus(PRIME_INFERENCE_PROVIDER_ID).source;
-		if (authSource === "runtime" || authSource === "environment") return undefined;
+		// The stored primeTeam survives runtime and environment API-key
+		// overrides: an ambient PRIME_API_KEY supplies the key, never the team,
+		// so the stored login's team still scopes the credentialed catalog and
+		// private-model fetches (fleet parity with the Rust port's auth
+		// team-source change). Without this, boxes running with an ambient
+		// PRIME_API_KEY never send X-Prime-Team-ID, and the team-private
+		// internal/* routes disappear from /model.
 		const credential = this.data[PRIME_INFERENCE_PROVIDER_ID];
 		return credential?.type === "api_key" ? credential.primeTeam : undefined;
 	}
