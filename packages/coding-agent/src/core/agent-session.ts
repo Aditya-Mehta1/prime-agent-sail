@@ -135,7 +135,9 @@ import {
 	normalizeHeartbeatDeliveryMode,
 } from "./cron-jobs.js";
 import { DEFAULT_THINKING_LEVEL } from "./defaults.js";
+import { DispatchSshManager, type SshConnectionInfo } from "./dispatch/ssh.js";
 import type { DispatchBinding } from "./dispatch/types.js";
+import { loadDispatchBinding } from "./dispatch/workspace.js";
 import { exportSessionToHtml, type ToolHtmlRenderer } from "./export-html/index.js";
 import { createToolHtmlRenderer } from "./export-html/tool-renderer.js";
 import {
@@ -280,6 +282,7 @@ import {
 	createRlmListSubagentsHostHandler,
 	createRlmProgressNoteHostHandler,
 	createRlmRunHostHandler,
+	createRlmSshHostHandlers,
 	findRlmModelMatches,
 	findUniqueRlmShortFormModelMatch,
 	formatRlmModelUnavailableError,
@@ -1715,6 +1718,7 @@ export class AgentSession {
 	private _repliedToParentSinceTask: boolean | undefined;
 	private _parentReplyCount = 0;
 	private _subagentRuntimeHost?: SubagentRuntimeHost;
+	private _sshManager?: DispatchSshManager;
 	// Shared by children charged to the same assistant; excludes usage not yet attributed on disk.
 	private _rlmDurableParentUsage = new WeakMap<AssistantMessage, Usage>();
 	// Child usage not yet represented by an indexed attribution, including a delayed parent entry.
@@ -2005,6 +2009,40 @@ export class AgentSession {
 
 	setSubagentRuntimeHost(host?: SubagentRuntimeHost): void {
 		this._subagentRuntimeHost = host;
+	}
+
+	private _assertForegroundSshCaller(): void {
+		if (this._rlmDepth !== 0 || this.dispatchBinding) {
+			throw new Error("rlm.ssh is available only to the local foreground agent (depth 0)");
+		}
+		if (this._disposed || this._disposing) throw new Error("Session is disposed");
+	}
+
+	async openRlmSsh(target: string, args: string[]): Promise<SshConnectionInfo> {
+		this._assertForegroundSshCaller();
+		const child = await this._resolveDirectRlmSubagent(target);
+		const binding =
+			this.getRlmChildSession(child.rlm_child_id)?.dispatchBinding ?? loadDispatchBinding(child.session_dir);
+		if (!binding) throw new Error(`Agent "${target}" does not have a Sailbox`);
+		this._assertForegroundSshCaller();
+		if (!this._sshManager) {
+			const manager = new DispatchSshManager();
+			this._sshManager = manager;
+			this.registerDisposeCallback(() => manager.dispose());
+		}
+		return this._sshManager.open(binding, args);
+	}
+
+	async closeRlmSsh(id: string): Promise<void> {
+		this._assertForegroundSshCaller();
+		if (!this._sshManager) throw new Error(`Unknown SSH connection: ${id}`);
+		await this._sshManager.close(id);
+	}
+
+	getRlmSshStatus(id: string): SshConnectionInfo {
+		this._assertForegroundSshCaller();
+		if (!this._sshManager) throw new Error(`Unknown SSH connection: ${id}`);
+		return this._sshManager.status(id);
 	}
 
 	private async _getRequiredRequestAuth(model: Model<any>): Promise<{
@@ -11054,6 +11092,14 @@ export class AgentSession {
 				input: this.model?.input ?? [],
 			}),
 		};
+		Object.assign(
+			handlers,
+			createRlmSshHostHandlers({
+				open: (target, args) => this.openRlmSsh(target, args),
+				close: (id) => this.closeRlmSsh(id),
+				status: (id) => this.getRlmSshStatus(id),
+			}),
+		);
 		if (this._includeGoals) {
 			for (const type of ["goal.get", "goal.create", "goal.complete"]) {
 				handlers[type] = async (payload) => this.handleGoalHostRequest(type, payload);

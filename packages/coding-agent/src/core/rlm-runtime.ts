@@ -1,6 +1,7 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, Model, ServiceTier } from "@earendil-works/pi-ai";
 import type { AgentSession, RlmChildAgentStatus } from "./agent-session.js";
+import type { SshConnectionInfo } from "./dispatch/ssh.js";
 import type { DispatchBinding } from "./dispatch/types.js";
 import type { ToolDefinition } from "./extensions/index.js";
 import type { HostRequestHandler } from "./kernel/index.js";
@@ -444,6 +445,35 @@ export function createRlmProgressNoteHostHandler(handler: RlmProgressNoteHandler
 		}
 		const { accepted, retry_after_ms } = handler(message);
 		return retry_after_ms === undefined ? { accepted } : { accepted, retry_after_ms };
+	};
+}
+
+export function createRlmSshHostHandlers(controller: {
+	open(target: string, args: string[]): Promise<SshConnectionInfo>;
+	close(id: string): Promise<void>;
+	status(id: string): SshConnectionInfo;
+}): Record<string, HostRequestHandler> {
+	const connectionId = (payload: Record<string, unknown>): string => {
+		if (typeof payload.id !== "string" || !payload.id.trim()) {
+			throw new Error("SSH connection id must be a non-empty string");
+		}
+		return payload.id.trim();
+	};
+	return {
+		"rlm.ssh": async (payload) => {
+			if (typeof payload.target !== "string" || !payload.target.trim()) {
+				throw new Error("rlm.ssh target must be a non-empty string");
+			}
+			if (!Array.isArray(payload.args) || payload.args.some((arg) => typeof arg !== "string")) {
+				throw new Error("rlm.ssh args must be an array of strings");
+			}
+			return { ...(await controller.open(payload.target.trim(), payload.args as string[])) };
+		},
+		"rlm.ssh.close": async (payload) => {
+			await controller.close(connectionId(payload));
+			return {};
+		},
+		"rlm.ssh.status": async (payload) => ({ ...controller.status(connectionId(payload)) }),
 	};
 }
 

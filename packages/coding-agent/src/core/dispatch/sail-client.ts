@@ -49,6 +49,40 @@ export class SailClient {
 		});
 	}
 
+	async prepareSsh(boxId: string, signal?: AbortSignal): Promise<void> {
+		await (await this.sdk).enableSsh(boxId, { timeoutSeconds: 60 });
+		await this.run(
+			boxId,
+			`set -eu
+mkdir -p /etc/ssh/sshd_config.d
+printf 'ChannelTimeout direct-tcpip=5m\\nUnusedConnectionTimeout 1m\\n' > /etc/ssh/sshd_config.d/00-prime-ssh.conf
+/usr/sbin/sshd -t
+kill -HUP "$(cat /run/sshd.pid)"
+`,
+			{ timeoutSeconds: 30, signal },
+		);
+	}
+
+	async sshAlias(boxId: string, signal?: AbortSignal) {
+		const config = await this.config;
+		const env: NodeJS.ProcessEnv = {
+			...process.env,
+			SAIL_API_KEY: config.apiKey,
+			SAILBOX_API_URL: config.sailboxApiUrl,
+			SAIL_API_URL: config.apiUrl,
+		};
+		const { stdout } = await executeFile("sail", ["box", "ssh", "alias", boxId, "--json"], {
+			env,
+			signal,
+			timeout: 60_000,
+			windowsHide: true,
+		});
+		const data = JSON.parse(stdout) as { hosts: string[]; ssh_config_path: string };
+		if (!data.hosts?.[0] || !data.ssh_config_path)
+			throw new Error("Sail did not return an SSH alias; the worker must have SSH enabled");
+		return { host: data.hosts[0], configFile: data.ssh_config_path, env };
+	}
+
 	async run(boxId: string, command: string, options: RunOptions = {}) {
 		return Sailbox.fromId(boxId, { client: await this.sdk }).run(command, {
 			timeoutSeconds: 300,

@@ -24,6 +24,28 @@ class RLMSpawnHandle:
 
 
 @dataclass(frozen=True)
+class SshStatus:
+    id: str
+    pid: int
+    box_id: str
+    running: bool
+    exit_code: int | None
+
+
+@dataclass(frozen=True)
+class SshHandle:
+    id: str
+    pid: int
+    box_id: str
+
+    async def close(self) -> None:
+        await host_request("rlm.ssh.close", {"id": self.id})
+
+    async def status(self) -> SshStatus:
+        return SshStatus(**await host_request("rlm.ssh.status", {"id": self.id}))
+
+
+@dataclass(frozen=True)
 class RLMCreateSessionHandle:
     active_session_id: str
     session_id: str
@@ -203,6 +225,18 @@ async def dispatch(
         kwargs["inputs"] = {key: str(value) for key, value in inputs.items()}
     payload = await host_request("rlm.dispatch", {"prompt": prompt, "kwargs": kwargs})
     return _spawn_handle_from_payload(payload)
+
+
+async def ssh(target: str | RLMSubagent | RLMSpawnHandle, *, args: list[str]) -> SshHandle:
+    """Forward ports from a dispatched worker; local foreground agent only."""
+    if isinstance(target, (RLMSpawnHandle, RLMSubagent)):
+        selector = target.rlm_child_id
+    elif isinstance(target, str) and target.strip():
+        selector = target.strip()
+    else:
+        raise TypeError("target must be RLMSpawnHandle, RLMSubagent, or non-empty str")
+    status = SshStatus(**await host_request("rlm.ssh", {"target": selector, "args": args}))
+    return SshHandle(status.id, status.pid, status.box_id)
 
 
 def _model_from_payload(payload: Any) -> RLMModel:
@@ -571,6 +605,9 @@ class _RLMNamespace:
     ) -> RLMSpawnHandle:
         return await dispatch(prompt, name=name, inputs=inputs)
 
+    async def ssh(self, target: str | RLMSubagent | RLMSpawnHandle, *, args: list[str]) -> SshHandle:
+        return await ssh(target, args=args)
+
     async def create_session(
         self,
         prompt: str,
@@ -630,6 +667,8 @@ __all__ = [
     "RLMSpawnHandle",
     "RLMSubagent",
     "RLMSubagentActivity",
+    "SshHandle",
+    "SshStatus",
     "create_session",
     "RefinementEvent",
     "bash",
@@ -644,6 +683,7 @@ __all__ = [
     "progress_note",
     "rlm",
     "spawn",
+    "ssh",
 ]
 
 # Lazily re-export the generic MCP error type. Kept lazy so `import rlm` never

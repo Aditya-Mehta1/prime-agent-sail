@@ -26,6 +26,8 @@ import {
 	type RlmChildAgentSnapshot,
 } from "../src/core/agent-session.js";
 import { AuthStorage } from "../src/core/auth-storage.js";
+import { SailClient } from "../src/core/dispatch/sail-client.js";
+import type { DispatchBinding } from "../src/core/dispatch/types.js";
 import type { LoadExtensionsResult } from "../src/core/extensions/index.js";
 import { type HostRequestHandler, type HostRequestHandlers, ReplKernelManager } from "../src/core/kernel/index.js";
 import { ASYNC_BASH_COMPLETION_CUSTOM_TYPE, convertToLlm } from "../src/core/messages.js";
@@ -214,6 +216,7 @@ describe("AgentSession rlm recursion", () => {
 	function createSession(
 		options: {
 			depth?: number;
+			dispatchBinding?: DispatchBinding;
 			maxDepth?: number;
 			streamFn?: StreamFn;
 			agentMessageController?: AgentSessionMessageController;
@@ -269,6 +272,7 @@ describe("AgentSession rlm recursion", () => {
 						]
 					: undefined,
 			}),
+			dispatchBinding: options.dispatchBinding,
 			agentMessageController: options.agentMessageController,
 			subagentRuntimeHost: options.subagentRuntimeHost,
 			customTools: options.customTools,
@@ -442,6 +446,59 @@ describe("AgentSession rlm recursion", () => {
 	function quiescenceWaitAborts(target: AgentSession): number {
 		return (target as unknown as InspectableRlmSession)._rlmQuiescenceWaitAborts.size;
 	}
+
+	it("resolves a direct child's persisted SSH binding without blocking a turn and cancels setup on disposal", async () => {
+		const entered = deferred<void>();
+		const release = deferred<void>();
+		const alias = vi.spyOn(SailClient.prototype, "sshAlias").mockImplementation(async () => {
+			entered.resolve();
+			await release.promise;
+			return { host: "fixture.sail", configFile: "/tmp/fixture", env: {} };
+		});
+		const childDir = join(tempDir, "ssh-worker");
+		mkdirSync(childDir);
+		const child = createSession({ depth: 1, rlmSessionDir: childDir });
+		child.setSessionName("ssh-worker");
+		const root = createSession();
+		root.registerRlmChildSession("ssh-child", child);
+		const open = hostHandler(root, "rlm.ssh");
+		try {
+			await expect(open({ target: "unrelated", args: [] })).rejects.toThrow("No direct RLM subagent");
+			await expect(open({ target: "ssh-worker", args: [] })).rejects.toThrow("does not have a Sailbox");
+			writeFileSync(
+				join(childDir, "dispatch.json"),
+				JSON.stringify({ ownsBox: true, boxId: "test-box", guestCwd: "/work" }),
+			);
+			const opening = open({ target: "ssh-worker", args: ["-L", "3000:localhost:3000"] });
+			const rejected = expect(opening).rejects.toThrow("SSH owner session closed");
+			await entered.promise;
+			expect(root.isSessionActive).toBe(false);
+			expect(root.isBashRunning).toBe(false);
+			await root.prompt("continue while forwarding starts");
+			expect(root.messages.at(-1)).toMatchObject({ role: "assistant" });
+			root.dispose();
+			release.resolve();
+			await rejected;
+			await root.disposeAsync();
+			await expect(open({ target: "ssh-worker", args: [] })).rejects.toThrow("disposed");
+		} finally {
+			release.resolve();
+			await root.disposeAsync();
+			alias.mockRestore();
+		}
+	});
+
+	it.each([
+		["local background", { depth: 1 }],
+		["remote", { dispatchBinding: { boxId: "remote-box", inputs: {} } as DispatchBinding }],
+	])("rejects SSH host operations from a %s agent", async (_name, options) => {
+		const caller = createSession(options);
+		for (const operation of ["rlm.ssh", "rlm.ssh.close", "rlm.ssh.status"]) {
+			await expect(hostHandler(caller, operation)({ target: "worker", args: [], id: "connection" })).rejects.toThrow(
+				"only to the local foreground agent",
+			);
+		}
+	});
 
 	it("persists RLM_DEPTH for a fresh session and reports the seeded depth", () => {
 		vi.stubEnv("RLM_DEPTH", "1");

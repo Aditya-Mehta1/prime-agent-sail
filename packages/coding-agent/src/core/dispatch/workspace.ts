@@ -130,6 +130,8 @@ uv pip install --python ${shellQuote(binding.guestPython)} -q ${[`${GUEST_INSTAL
 `;
 		await client.run(box.sailboxId, bootstrap, { timeoutSeconds: 600, signal: options.signal });
 		options.signal?.throwIfAborted();
+		await client.prepareSsh(box.sailboxId, options.signal);
+		options.signal?.throwIfAborted();
 		return binding;
 	} catch (error) {
 		if (binding) await terminateDispatchWorkspace(binding);
