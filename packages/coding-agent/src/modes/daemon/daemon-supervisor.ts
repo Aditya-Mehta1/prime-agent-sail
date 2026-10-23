@@ -35,6 +35,9 @@ import {
 	migrateLegacyCronJobsToSessionArtifacts,
 	SESSION_SCHEDULED_JOBS_FILENAME,
 } from "../../core/cron-jobs.js";
+import { SailClient } from "../../core/dispatch/sail-client.js";
+import type { DispatchBinding } from "../../core/dispatch/types.js";
+import { loadDispatchBinding } from "../../core/dispatch/workspace.js";
 import {
 	clearOrphanProcessJournal,
 	killOrphanProcess,
@@ -196,9 +199,11 @@ export function handshakeBudgetMs(deadline: number, now = Date.now()): number {
 }
 const ROSTER_WATCHDOG_INTERVAL_MS = 15_000;
 const ROSTER_STALE_AFTER_MS = 3 * ROSTER_HEARTBEAT_INTERVAL_MS;
+const SAILBOX_STATUS_REFRESH_INTERVAL_MS = 60_000;
 const SUPERVISOR_SERVER_CAPABILITIES: readonly DaemonServerCapability[] = [
 	...DAEMON_DEFAULT_SERVER_CAPABILITIES,
 	"agent_roster",
+	"dispatch_roster",
 	"direct_peer_transport",
 ];
 const PEER_TRANSPORT_GRANT_TTL_MS = 10_000;
@@ -677,6 +682,7 @@ export class DaemonSupervisor {
 	private readonly compactCatchupInProgress = new Set<string>();
 	private readonly pendingSessionNames = new Set<string>();
 	private readonly catalog: DaemonCatalogClient;
+	private readonly sailClient = new SailClient();
 	private readonly settingsManager: SettingsManager;
 	private rosterStore?: AgentRoster;
 	private readonly pendingRosterChanged = new Set<string>();
@@ -687,6 +693,9 @@ export class DaemonSupervisor {
 	private readonly publishedRosterJson = new Map<string, string>();
 	private rosterPushScheduled = false;
 	private rosterWatchdogTimer?: ReturnType<typeof setInterval>;
+	private sailboxStatusRefreshTimer?: ReturnType<typeof setInterval>;
+	private sailboxStatusRefresh?: Promise<void>;
+	private readonly sailboxStatuses = new Map<string, string>();
 	private rlmSpawnLedgerInstance?: RlmSpawnLedger;
 	private idleEvictionTimer?: ReturnType<typeof setTimeout>;
 	private idleEvictionSweep?: Promise<void>;
@@ -862,6 +871,64 @@ export class DaemonSupervisor {
 		if (!this.rosterWatchdogTimer) return;
 		clearInterval(this.rosterWatchdogTimer);
 		this.rosterWatchdogTimer = undefined;
+	}
+
+	private clearSailboxStatusRefreshTimer(): void {
+		if (!this.sailboxStatusRefreshTimer) return;
+		clearInterval(this.sailboxStatusRefreshTimer);
+		this.sailboxStatusRefreshTimer = undefined;
+	}
+
+	private syncSailboxStatusRefresh(): void {
+		const hasConsumer = [...this.clients].some((client) => client.rosterSubscribed === true);
+		const hasBox = [...this.roster().values()].some((entry) => entry.summary.sailboxId !== undefined);
+		if (this.shuttingDown || !hasConsumer || !hasBox) {
+			this.clearSailboxStatusRefreshTimer();
+			return;
+		}
+		if (this.sailboxStatusRefreshTimer) return;
+		void this.refreshSailboxStatuses();
+		this.sailboxStatusRefreshTimer = setInterval(
+			() => void this.refreshSailboxStatuses(),
+			SAILBOX_STATUS_REFRESH_INTERVAL_MS,
+		);
+		this.sailboxStatusRefreshTimer.unref?.();
+	}
+
+	private refreshSailboxStatuses(): Promise<void> {
+		if (this.sailboxStatusRefresh) return this.sailboxStatusRefresh;
+		if (this.shuttingDown || ![...this.clients].some((client) => client.rosterSubscribed === true)) {
+			return Promise.resolve();
+		}
+		const refresh = (async () => {
+			try {
+				const boxes = await this.sailClient.listBoxes();
+				if (this.shuttingDown || ![...this.clients].some((client) => client.rosterSubscribed === true)) return;
+				this.sailboxStatuses.clear();
+				for (const box of boxes) this.sailboxStatuses.set(box.sailboxId, box.status);
+				for (const entry of this.roster().values()) {
+					const sailboxId = entry.summary.sailboxId;
+					const sailboxStatus = sailboxId ? this.sailboxStatuses.get(sailboxId) : undefined;
+					if (!sailboxId || sailboxStatus === undefined || entry.summary.sailboxStatus === sailboxStatus) continue;
+					const updated = this.roster().write(
+						{ ...entry, summary: { ...entry.summary, sailboxStatus } },
+						entry.workerId,
+						entry.statusLabel,
+					);
+					this.roster().amend(updated.agentId, {
+						statusLabel: entry.statusLabel,
+						lastHeardFromAt: entry.lastHeardFromAt,
+					});
+				}
+			} catch (error) {
+				this.log(`Failed to refresh Sailbox statuses: ${String(error)}`);
+			}
+		})();
+		const trackedRefresh = refresh.finally(() => {
+			if (this.sailboxStatusRefresh === trackedRefresh) this.sailboxStatusRefresh = undefined;
+		});
+		this.sailboxStatusRefresh = trackedRefresh;
+		return trackedRefresh;
 	}
 
 	private clearScheduledWakeTimer(): void {
@@ -1713,6 +1780,7 @@ export class DaemonSupervisor {
 				this.log(`Failed to release input pauses for disconnected client ${ownerClientId}: ${String(error)}`),
 			);
 			this.clients.delete(client);
+			this.syncSailboxStatusRefresh();
 			this.cancelWaitingPromptAdmissionsForClient(client);
 			for (const activeSessionId of [...client.attachedActiveSessionIds]) {
 				client.attachedActiveSessionIds.delete(activeSessionId);
@@ -2176,10 +2244,12 @@ export class DaemonSupervisor {
 				return this.handleList(client, command);
 			case "roster_subscribe":
 				client.rosterSubscribed = true;
+				this.syncSailboxStatusRefresh();
 				return success(command.id, command.type, { roster: this.rosterEntriesForClient() });
 			case "roster_unsubscribe":
 				client.rosterSubscribed = false;
 				client.rosterResyncPending = false;
+				this.syncSailboxStatusRefresh();
 				return success(command.id, command.type);
 			case "list_agent_peers": {
 				const requester = [...this.workers.values()].find(
@@ -3022,12 +3092,28 @@ export class DaemonSupervisor {
 	}
 
 	private async hydratedSeedEntry<T extends WorkerRosterEntry>(entry: T): Promise<T> {
-		const info = entry.summary.sessionFile
-			? await readSessionInfo(entry.summary.sessionFile).catch(() => undefined)
-			: undefined;
-		if (!info) return { ...entry, seededCwd: true as const };
+		const sessionFile = entry.summary.sessionFile;
+		const info = sessionFile ? await readSessionInfo(sessionFile).catch(() => undefined) : undefined;
+		let dispatchBinding: DispatchBinding | undefined;
+		if (sessionFile && entry.summary.sailboxId === undefined) {
+			try {
+				dispatchBinding = loadDispatchBinding(getSessionArtifactPathForFile(sessionFile, entry.summary.sessionId));
+			} catch {
+				// Optional dispatch metadata must not prevent a saved row from loading.
+			}
+		}
+		if (!info && !dispatchBinding) return { ...entry, seededCwd: true as const };
 		const { seededCwd, ...rest } = entry;
-		return { ...rest, summary: { ...entry.summary, cwd: info.cwd } } as T;
+		return {
+			...rest,
+			...(!info ? { seededCwd: true as const } : {}),
+			summary: {
+				...entry.summary,
+				...(info ? { cwd: info.cwd } : {}),
+				...(dispatchBinding?.ownsBox ? { isDispatchWorker: true } : {}),
+				...(dispatchBinding ? { sailboxId: dispatchBinding.boxId } : {}),
+			},
+		} as T;
 	}
 
 	private async hydrateSeededEntry(entry: AgentRosterEntry): Promise<AgentRosterEntry> {
@@ -4524,6 +4610,7 @@ export class DaemonSupervisor {
 			this.pendingRosterRemoved.delete(mutation.agentId);
 			this.pendingRosterChanged.add(mutation.agentId);
 		}
+		this.syncSailboxStatusRefresh();
 		this.scheduleRosterPush();
 	}
 
@@ -4592,7 +4679,12 @@ export class DaemonSupervisor {
 		statusLabel?: AgentRosterEntry["statusLabel"],
 	): AgentRosterEntry {
 		const previousDirect = this.roster().get(entry.agentId)?.summary.directAttachedClients ?? 0;
-		const stored = this.roster().write(entry, worker?.descriptor.workerId, statusLabel);
+		const sailboxStatus = entry.summary.sailboxId ? this.sailboxStatuses.get(entry.summary.sailboxId) : undefined;
+		const stored = this.roster().write(
+			sailboxStatus === undefined ? entry : { ...entry, summary: { ...entry.summary, sailboxStatus } },
+			worker?.descriptor.workerId,
+			statusLabel,
+		);
 		// Direct peers attach and detach on the worker socket, so their last detach arrives
 		// here as roster truth instead of through a supervisor-socket close.
 		if (worker !== undefined && previousDirect > 0 && (entry.summary.directAttachedClients ?? 0) === 0) {
@@ -7323,6 +7415,7 @@ export class DaemonSupervisor {
 		this.clearHeartbeatsChangedBroadcast();
 		this.clearScheduledWakeTimer();
 		this.clearRosterWatchdogTimer();
+		this.clearSailboxStatusRefreshTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		for (const cleanup of this.signalCleanupHandlers.splice(0)) {
 			await this.runCleanupStep("signal handler", cleanup);
@@ -7420,6 +7513,7 @@ export class DaemonSupervisor {
 		this.clearHeartbeatsChangedBroadcast();
 		this.clearScheduledWakeTimer();
 		this.clearRosterWatchdogTimer();
+		this.clearSailboxStatusRefreshTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		try {
 			for (const client of this.clients) {
@@ -7458,6 +7552,7 @@ export class DaemonSupervisor {
 			this.shuttingDown = false;
 			this.scheduleIdleEvictionSweep();
 			this.scheduleScheduledSessionWakeRecompute();
+			this.syncSailboxStatusRefresh();
 			throw error;
 		}
 	}
@@ -7480,6 +7575,7 @@ export class DaemonSupervisor {
 		this.clearHeartbeatsChangedBroadcast();
 		this.clearScheduledWakeTimer();
 		this.clearRosterWatchdogTimer();
+		this.clearSailboxStatusRefreshTimer();
 		await this.idleEvictionSweep?.catch(() => undefined);
 		for (const worker of this.workers.values()) {
 			worker.intentionalStop = true;

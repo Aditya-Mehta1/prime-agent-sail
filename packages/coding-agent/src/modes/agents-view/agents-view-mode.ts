@@ -2827,7 +2827,11 @@ export class AgentsViewMode implements Component, Focusable {
 		if (row.kind === "subagent-code") return this.renderCodeRow(row);
 		if (row.kind === "subagent-summary") {
 			const indent = "  ".repeat(row.depth);
-			return markRow(formatTableCell(`${indent}${row.expanded ? "▾" : "▸"} ${row.title}`, width));
+			const workers = row.workerCounts;
+			const workerSummary = workers
+				? `${theme.fg("accent", `${workers.workers} workers`)} ${theme.getSailboxColor()(`· ${workers.runningBoxes} active | ${workers.sleepingBoxes} sleeping boxes`)} · `
+				: "";
+			return markRow(formatTableCell(`${indent}${row.expanded ? "▾" : "▸"} ${workerSummary}${row.title}`, width));
 		}
 		const pendingDelete = row.kind === "agent" && this.isPendingDeleteRow(row);
 		const pendingKill = row.kind === "subagent" && this.isPendingKillSubagentRow(row);
@@ -2844,7 +2848,11 @@ export class AgentsViewMode implements Component, Focusable {
 		const icon = this.formatRowIcon(row.section, this.getRowIcon(row.section));
 		const badge = formatHeartbeatBadge(row.heartbeat);
 		const heartbeat = badge ? `${theme.fg((row.heartbeat?.activeCount ?? 0) > 0 ? "error" : "dim", badge)} ` : "";
-		const title = `${"  ".repeat(row.depth)}${icon} ${heartbeat}${styleRowTitle(row)}`;
+		const worker =
+			row.summary.isDispatchWorker === true
+				? `${theme.fg("accent", `[w] ${styleRowTitle(row)}`)}`
+				: styleRowTitle(row);
+		const title = `${"  ".repeat(row.depth)}${icon} ${heartbeat}${worker}`;
 		const status =
 			row.summary.lastHeardFromAt !== undefined
 				? getSessionStatusLabel(row.summary, row.heartbeat)
@@ -2857,6 +2865,15 @@ export class AgentsViewMode implements Component, Focusable {
 			formatTableCell(theme.fg("muted", formatSessionModel(row)), layout.modelWidth),
 		];
 		if (layout.activityWidth > 0) cells.push(formatTableCell(theme.fg("dim", activity), layout.activityWidth));
+		if (layout.sailboxWidth > 0) {
+			const sailbox = formatSailboxLabel(row.summary.sailboxId, row.summary.sailboxStatus, layout.sailboxWidth);
+			cells.push(
+				formatTableCell(
+					row.summary.sailboxId ? theme.getSailboxColor()(sailbox) : theme.fg("dim", sailbox),
+					layout.sailboxWidth,
+				),
+			);
+		}
 		cells.push(theme.fg("dim", details));
 		return markRow(formatTableCell(cells.join("  "), width));
 	}
@@ -3072,6 +3089,7 @@ export interface AgentsViewUsageLayout {
 	nameWidth: number;
 	modelWidth: number;
 	activityWidth: number;
+	sailboxWidth: number;
 }
 
 export function buildCompactAgentsViewLayout(rows: readonly AgentsViewRow[], width = 120): AgentsViewUsageLayout {
@@ -3085,13 +3103,32 @@ export function buildCompactAgentsViewLayout(rows: readonly AgentsViewRow[], wid
 	const ageWidth = entries.reduce((size, entry) => Math.max(size, visibleWidth(entry.age)), 3);
 	const detailsWidth = costWidth + 2 + ageWidth;
 	const available = Math.max(0, width - detailsWidth - 4);
+	const sailboxes = sessions.filter((row) => row.summary.sailboxId);
+	const minimumSailboxWidth = sailboxes.reduce(
+		(size, row) =>
+			row.summary.sailboxId && row.summary.sailboxStatus
+				? Math.max(size, visibleWidth(row.summary.sailboxStatus) + 4)
+				: size,
+		7,
+	);
+	const desiredSailboxWidth = Math.min(
+		24,
+		sailboxes.reduce(
+			(size, row) => Math.max(size, visibleWidth(`${row.summary.sailboxId} · ${row.summary.sailboxStatus ?? ""}`)),
+			minimumSailboxWidth,
+		),
+	);
+	const sailboxWidth =
+		sailboxes.length > 0 && available >= minimumSailboxWidth + 12 ? Math.min(desiredSailboxWidth, available - 12) : 0;
+	const contentAvailable = Math.max(0, available - sailboxWidth - (sailboxWidth > 0 ? 2 : 0));
 	const desiredModelWidth = sessions.reduce((size, row) => Math.max(size, visibleWidth(formatSessionModel(row))), 12);
-	const modelWidth = Math.min(desiredModelWidth, 32, Math.max(0, available - 12));
-	const nameWidth = Math.min(28, Math.max(0, available - modelWidth));
-	const activityWidth = Math.max(0, available - modelWidth - nameWidth - 2);
+	const modelWidth = Math.min(desiredModelWidth, 32, Math.max(0, contentAvailable - 12));
+	const nameWidth = Math.min(28, Math.max(0, contentAvailable - modelWidth));
+	const activityWidth = Math.max(0, contentAvailable - modelWidth - nameWidth - 2);
 	const detailLine = (cost: string, age: string) => `${padCellStart(cost, costWidth)}  ${padCellStart(age, ageWidth)}`;
 	const headings = [formatTableCell("Session", nameWidth), formatTableCell("Model", modelWidth)];
 	if (activityWidth > 0) headings.push(formatTableCell("Activity", activityWidth));
+	if (sailboxWidth > 0) headings.push(formatTableCell("Sailbox", sailboxWidth));
 	headings.push(detailLine("Cost", "Age"));
 	return {
 		legend: formatTableCell(headings.join("  "), width),
@@ -3099,11 +3136,19 @@ export function buildCompactAgentsViewLayout(rows: readonly AgentsViewRow[], wid
 		nameWidth,
 		modelWidth,
 		activityWidth,
+		sailboxWidth,
 	};
 }
 
 function padCellStart(value: string, width: number): string {
 	return " ".repeat(Math.max(0, width - visibleWidth(value))) + value;
+}
+
+function formatSailboxLabel(id: string | undefined, status: string | undefined, width: number): string {
+	if (!id) return "—";
+	if (!status) return truncateToWidth(id, width, "…");
+	const idWidth = Math.max(1, width - visibleWidth(status) - 3);
+	return `${truncateToWidth(id, idWidth, "…")} · ${status}`;
 }
 
 // Explicit session names read bold so they stand out from fallback titles

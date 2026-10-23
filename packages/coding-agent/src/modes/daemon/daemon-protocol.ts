@@ -67,8 +67,10 @@ export const DAEMON_COMMAND_ENVELOPE_MIN_PROTOCOL_VERSION = 7;
 // Revision 28 publishes the last recorded model on saved-session rows.
 // Revision 29 adds the capability-gated abort_and_send_queued command.
 // Revision 30 adds structured update_restarting failure info for opens fenced by an update restart.
-export const DAEMON_SCHEMA_REVISION = 30;
-export const DAEMON_SCHEMA_ID = "protocol-7-schema-30-f908f493c9e1";
+// Revision 31 adds optional dispatch runtime metadata to session and child summaries.
+export const DAEMON_SCHEMA_REVISION = 31;
+/** Fingerprint = first 12 hex of sha256("protocol-7|<revision>|<sorted command names>"). */
+export const DAEMON_SCHEMA_ID = "protocol-7-schema-31-68f879f790e7";
 
 export type DaemonProtocolName = typeof DAEMON_PROTOCOL_NAME;
 export type DaemonProtocolVersion = number;
@@ -114,6 +116,8 @@ export type DaemonServerCapability =
 	| "owned_prompt_cancellation"
 	| "acp_mcp_servers"
 	| "direct_peer_transport"
+	// Gates optional Sailbox fields in roster rows; it does not gate roster delivery.
+	| "dispatch_roster"
 	| "abort_and_send_queued";
 
 export type DaemonReplayStatus = "complete" | "partial" | "unavailable";
@@ -795,6 +799,7 @@ export const DAEMON_COMMAND_COMPATIBILITY = {
 	release_session_input_pause: SESSION_INPUT_PAUSE_COMMAND,
 	cron_list: LEGACY_DAEMON_COMMAND,
 	heartbeats_list: { minProtocol: 7, capability: "heartbeat_catalog" },
+	// dispatch_roster gates optional metadata; the roster subscription remains agent_roster-only.
 	roster_subscribe: { minProtocol: 7, capability: "agent_roster" },
 	roster_unsubscribe: { minProtocol: 7, capability: "agent_roster" },
 	heartbeat_manage: { minProtocol: 7, capability: "heartbeat_management" },
@@ -1211,6 +1216,7 @@ const _DAEMON_OUTBOUND_COMPATIBILITY = {
 	daemon_hello: LEGACY_DAEMON_COMMAND,
 	daemon_closing: LEGACY_DAEMON_COMMAND,
 	heartbeats_changed: { minProtocol: 7, capability: "heartbeat_catalog" },
+	// dispatch_roster gates only optional row metadata; older clients still receive the roster.
 	roster_update: { minProtocol: 7, capability: "agent_roster" },
 	session_event: LEGACY_DAEMON_COMMAND,
 	side_question_event: LEGACY_DAEMON_COMMAND,

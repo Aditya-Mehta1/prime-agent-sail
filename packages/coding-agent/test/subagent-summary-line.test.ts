@@ -47,6 +47,9 @@ describe("subagent status projections", () => {
 			running: 4,
 			idle: 4,
 			inactive: 2,
+			workers: 0,
+			runningBoxes: 0,
+			sleepingBoxes: 0,
 		});
 	});
 
@@ -60,11 +63,19 @@ describe("subagent status projections", () => {
 			summary("f1", { parentSessionId: "other-root", rosterStatus: "running" }),
 		];
 
+		const sleepingBox = { sailboxId: "sleeping-box", sailboxStatus: "sleeping" };
+		Object.assign(rows[0]!, sleepingBox, { isDispatchWorker: true });
+		Object.assign(rows[1]!, sleepingBox);
+		Object.assign(rows[2]!, { sailboxId: "active-box", sailboxStatus: "running", isDispatchWorker: true });
+
 		expect(countRosterSubagentStatuses(rows, { sessionId: "root-session" })).toEqual({
 			total: 4,
 			running: 3,
 			idle: 1,
 			inactive: 0,
+			workers: 2,
+			runningBoxes: 1,
+			sleepingBoxes: 1,
 		});
 	});
 });

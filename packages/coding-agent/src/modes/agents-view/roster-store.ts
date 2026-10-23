@@ -81,7 +81,13 @@ export class AgentsViewRosterStore {
 	}
 
 	summaries(): SessionSummary[] {
-		return [...this.entries.values()].map((entry) => sessionSummaryFromRosterEntry(entry));
+		const hasDispatchRoster = this.client?.supportsServerCapability("dispatch_roster") === true;
+		return [...this.entries.values()].map((entry) => {
+			const summary = sessionSummaryFromRosterEntry(entry);
+			if (hasDispatchRoster) return summary;
+			const { isDispatchWorker: _worker, sailboxId: _boxId, sailboxStatus: _boxStatus, ...legacySummary } = summary;
+			return legacySummary;
+		});
 	}
 
 	onUpdate(listener: () => void): () => void {

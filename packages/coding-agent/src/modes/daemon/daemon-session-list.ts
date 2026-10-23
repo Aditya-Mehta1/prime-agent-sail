@@ -42,6 +42,12 @@ export interface SessionSummary {
 	/** Latest message activity, used by the supervisor residency policy. */
 	lastActivityAt?: string;
 	runtimeKind?: "top-level" | "subagent";
+	/** True only for the child that owns a dispatch Sailbox. */
+	isDispatchWorker?: boolean;
+	/** Sailbox shared by this session; helper sessions can share their parent's box. */
+	sailboxId?: string;
+	/** Latest Sailbox state, enriched by the daemon supervisor. */
+	sailboxStatus?: string;
 	/** RLM spawn depth (0 for roots); fork edges preserve the source depth. */
 	rlmDepth?: number;
 	activeSessionId?: string;
@@ -280,6 +286,8 @@ interface SummaryComposeFingerprint {
 	cwd: string;
 	rlmDepth: number | undefined;
 	modelFallbackMessage: string | undefined;
+	isDispatchWorker: boolean;
+	sailboxId: string | undefined;
 	// Values computed once per attempt and shared with the compose.
 	headerTimestamp: string | undefined;
 	modified: string | undefined;
@@ -362,6 +370,8 @@ export function summaryForActiveSession(
 		cwd: session.sessionManager.getCwd(),
 		rlmDepth: session.rlmDepth,
 		modelFallbackMessage: activeSession.runtime.modelFallbackMessage,
+		isDispatchWorker: session.dispatchBinding?.ownsBox === true,
+		sailboxId: session.dispatchBinding?.boxId,
 		headerTimestamp,
 		modified,
 		lastActivityAt,
@@ -383,6 +393,8 @@ export function summaryForActiveSession(
 		hasRegisteredCronJob: hasRegisteredCronJob || undefined,
 		lastActivityAt,
 		runtimeKind: metadata.kind,
+		...(session.dispatchBinding?.ownsBox ? { isDispatchWorker: true } : {}),
+		...(session.dispatchBinding ? { sailboxId: session.dispatchBinding.boxId } : {}),
 		rlmDepth: session.rlmDepth,
 		activeSessionId: activeSession.activeSessionId,
 		sessionId: session.sessionId,

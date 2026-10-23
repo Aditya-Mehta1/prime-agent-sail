@@ -1,6 +1,6 @@
 import { type Component, type Focusable, getKeybindings, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { AgentConnectionRlmChildAgentSnapshot } from "../../agent-connection/index.js";
-import { collectSubagentDescendantSummaries } from "../../agents-view/agents-view-state.js";
+import { collectSubagentDescendantSummaries, countWorkerSailboxes } from "../../agents-view/agents-view-state.js";
 import { type AgentRosterStatus, classifyAgentStatus } from "../../daemon/agent-roster.js";
 import { classifySessionRosterStatus, type SessionSummary } from "../../daemon/daemon-session-list.js";
 import { theme } from "../theme/theme.js";
@@ -11,6 +11,9 @@ export interface SubagentSummaryCounts {
 	running: number;
 	idle: number;
 	inactive: number;
+	workers: number;
+	runningBoxes: number;
+	sleepingBoxes: number;
 }
 
 export function classifySubagentSnapshotStatus(child: AgentConnectionRlmChildAgentSnapshot): AgentRosterStatus {
@@ -29,9 +32,18 @@ export function countSubtreeSubagentStatuses(
 	children: Iterable<AgentConnectionRlmChildAgentSnapshot>,
 	parentId: string | undefined,
 ): SubagentSummaryCounts {
-	const counts: SubagentSummaryCounts = { total: 0, running: 0, idle: 0, inactive: 0 };
+	const counts: SubagentSummaryCounts = {
+		total: 0,
+		running: 0,
+		idle: 0,
+		inactive: 0,
+		workers: 0,
+		runningBoxes: 0,
+		sleepingBoxes: 0,
+	};
 	const knownNodes = new Set<string | undefined>([parentId]);
 	const pending = [...children].filter((child) => child.status !== "cancelled");
+	const descendants: AgentConnectionRlmChildAgentSnapshot[] = [];
 	let matched = true;
 	while (matched) {
 		matched = false;
@@ -42,30 +54,49 @@ export function countSubtreeSubagentStatuses(
 			matched = true;
 			counts.total += 1;
 			counts[classifySubagentSnapshotStatus(child)] += 1;
+			descendants.push(child);
 			knownNodes.add(child.id);
 		}
 	}
-	return counts;
+	return { ...counts, ...countWorkerSailboxes(descendants) };
 }
 
 export function countRosterSubagentStatuses(
 	summaries: Iterable<SessionSummary>,
 	parent: { activeSessionId?: string | undefined; sessionId?: string | undefined; sessionFile?: string | undefined },
 ): SubagentSummaryCounts {
-	const counts: SubagentSummaryCounts = { total: 0, running: 0, idle: 0, inactive: 0 };
+	const counts: SubagentSummaryCounts = {
+		total: 0,
+		running: 0,
+		idle: 0,
+		inactive: 0,
+		workers: 0,
+		runningBoxes: 0,
+		sleepingBoxes: 0,
+	};
+	const descendants: SessionSummary[] = [];
 	// The daemon roster spans every tree: count live rows in this session's subtree, at any depth.
 	for (const child of collectSubagentDescendantSummaries(summaries, parent)) {
 		if (child.lifecycle !== "live") continue;
 		counts.total += 1;
 		counts[child.rosterStatus ?? classifySessionRosterStatus(child)] += 1;
+		descendants.push(child);
 	}
-	return counts;
+	return { ...counts, ...countWorkerSailboxes(descendants) };
 }
 
 /** One-line entry into the current session's scoped agents view. */
 export class SubagentSummaryLine implements Component, Focusable {
 	focused = false;
-	private counts: SubagentSummaryCounts = { total: 0, running: 0, idle: 0, inactive: 0 };
+	private counts: SubagentSummaryCounts = {
+		total: 0,
+		running: 0,
+		idle: 0,
+		inactive: 0,
+		workers: 0,
+		runningBoxes: 0,
+		sleepingBoxes: 0,
+	};
 	private openable = false;
 
 	onOpen?: () => void;
@@ -121,12 +152,17 @@ export class SubagentSummaryLine implements Component, Focusable {
 			safeWidth,
 			"…",
 		);
+		const workerCounts =
+			this.counts.workers > 0 || this.counts.runningBoxes > 0 || this.counts.sleepingBoxes > 0
+				? `${theme.fg("accent", `${this.counts.workers} workers`)} ${theme.getSailboxColor()(`· ${this.counts.runningBoxes} active | ${this.counts.sleepingBoxes} sleeping boxes`)} · `
+				: "";
 		const counts =
-			theme.fg("success", `● ${this.counts.running} running`) +
-			"   " +
-			theme.fg("warning", `◐ ${this.counts.idle} idle`) +
-			"   " +
-			theme.fg("dim", `○ ${this.counts.inactive} inactive`);
+			workerCounts +
+			theme.fg("success", `${this.counts.running} running`) +
+			" | " +
+			theme.fg("warning", `${this.counts.idle} idle`) +
+			" | " +
+			theme.fg("dim", `${this.counts.inactive} inactive`);
 		const openHint = this.openable
 			? this.focused
 				? `${keyText("tui.select.confirm")}/${keyText("app.agents.open")} open`

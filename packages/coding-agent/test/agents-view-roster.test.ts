@@ -351,12 +351,16 @@ describe("supervisor roster subscription", () => {
 			};
 			try {
 				await bar.subscribeToRosterBar();
-				expect(setSubagentCounts).toHaveBeenLastCalledWith({ total: 1, running: 1, idle: 0, inactive: 0 });
+				expect(setSubagentCounts).toHaveBeenLastCalledWith(
+					expect.objectContaining({ total: 1, running: 1, idle: 0, inactive: 0 }),
+				);
 				bar.ui.requestRender.mockClear();
 
 				internals.writeRosterEntry(barChild("child-b", { sessionFile: "/tmp/child-b.jsonl" }));
 				await vi.waitFor(() =>
-					expect(setSubagentCounts).toHaveBeenLastCalledWith({ total: 2, running: 1, idle: 0, inactive: 1 }),
+					expect(setSubagentCounts).toHaveBeenLastCalledWith(
+						expect.objectContaining({ total: 2, running: 1, idle: 0, inactive: 1 }),
+					),
 				);
 				// A push with no accompanying session event must still repaint.
 				expect(bar.ui.requestRender).toHaveBeenCalled();
@@ -364,7 +368,9 @@ describe("supervisor roster subscription", () => {
 				// A client-owned session has no public roster row: the bar falls back to snapshots.
 				bar.connectionState = { activeSessionId: "owned-active", sessionId: "owned" };
 				bar.updateSubagentSummaryLine();
-				expect(setSubagentCounts).toHaveBeenLastCalledWith({ total: 1, running: 1, idle: 0, inactive: 0 });
+				expect(setSubagentCounts).toHaveBeenLastCalledWith(
+					expect.objectContaining({ total: 1, running: 1, idle: 0, inactive: 0 }),
+				);
 
 				// A public parent whose children all left the roster shows zero, never stale snapshots.
 				bar.connectionState = { activeSessionId: "parent2-active", sessionId: "parent2" };
@@ -374,7 +380,9 @@ describe("supervisor roster subscription", () => {
 					),
 				);
 				await vi.waitFor(() =>
-					expect(setSubagentCounts).toHaveBeenLastCalledWith({ total: 0, running: 0, idle: 0, inactive: 0 }),
+					expect(setSubagentCounts).toHaveBeenLastCalledWith(
+						expect.objectContaining({ total: 0, running: 0, idle: 0, inactive: 0 }),
+					),
 				);
 			} finally {
 				barClient.close();

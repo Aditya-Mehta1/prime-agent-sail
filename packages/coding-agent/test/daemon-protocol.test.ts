@@ -273,7 +273,7 @@ describe("daemon protocol helpers", () => {
 	});
 
 	it("requires cwd before a wire payload counts as a session summary", () => {
-		expect(isSessionSummary({ id: "worker-1", sessionId: "session-1", cwd: "/repo" })).toBe(true);
+		expect(isSessionSummary({ id: "worker-1", sessionId: "session-1", cwd: "/repo", sailboxId: "box-1" })).toBe(true);
 		expect(isSessionSummary({ id: "worker-1", sessionId: "session-1" })).toBe(false);
 	});
 });
