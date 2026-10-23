@@ -580,6 +580,12 @@ export class Theme {
 		return (str: string) => `${ansi}${str}[39m`;
 	}
 
+	getSailboxColor(): (str: string) => string {
+		const light = (getTerminalBackgroundKind() ?? this.name) === "light";
+		const ansi = fgAnsi(light ? "#664400" : "#f6e2b7", this.mode);
+		return (str: string) => `${ansi}${str}\x1b[39m`;
+	}
+
 	getAdaptiveAccentColor(): (str: string) => string {
 		const ansi =
 			getTerminalBackgroundKind() === "light"

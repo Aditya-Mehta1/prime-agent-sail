@@ -257,12 +257,17 @@ describe("DaemonClient", () => {
 		const socket = netMock.sockets[0]!;
 		socket.emit("connect");
 		await connect;
-		emitHello(socket, DAEMON_PROTOCOL_VERSION, [], DAEMON_SCHEMA_REVISION);
+		emitHello(socket, DAEMON_PROTOCOL_VERSION, ["agent_roster"], DAEMON_SCHEMA_REVISION - 1);
+		expect(client.supportsServerCapability("dispatch_roster")).toBe(false);
 
 		await expect(
 			client.request({ type: "get_direct_worker_transport", activeSessionId: "active-1" }),
 		).rejects.toThrow("does not support direct_peer_transport");
 		expect(socket.writes).toEqual([]);
+		const roster = client.request({ type: "roster_subscribe" });
+		const request = JSON.parse(socket.writes[0]!) as { id: string };
+		socket.emit("data", `{"id":"${request.id}","type":"response","command":"roster_subscribe","success":true}\n`);
+		await expect(roster).resolves.toMatchObject({ success: true });
 		client.close();
 	});
 

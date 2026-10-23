@@ -87,11 +87,38 @@ export interface AgentsViewRow {
 	hasSpawnCode?: boolean;
 	/** True when this subagent-summary row's list is expanded. */
 	expanded?: boolean;
+	/** Worker and distinct Sailbox counts for a subagent summary row. */
+	workerCounts?: WorkerSailboxCounts;
 	/** One source line of the spawn cell, for "subagent-code" rows. */
 	code?: string;
 	/** Merged durable/live source data for unified rows. */
 	record?: UnifiedSessionRecord;
 	heartbeat?: UnifiedSessionHeartbeat;
+}
+
+export interface WorkerSailboxCounts {
+	workers: number;
+	runningBoxes: number;
+	sleepingBoxes: number;
+}
+
+export function countWorkerSailboxes(
+	summaries: Iterable<Pick<SessionSummary, "isDispatchWorker" | "sailboxId" | "sailboxStatus">>,
+): WorkerSailboxCounts {
+	const boxStatuses = new Map<string, string | undefined>();
+	let workers = 0;
+	for (const summary of summaries) {
+		if (summary.isDispatchWorker) workers += 1;
+		if (!summary.sailboxId) continue;
+		if (!boxStatuses.has(summary.sailboxId)) boxStatuses.set(summary.sailboxId, summary.sailboxStatus);
+	}
+	let runningBoxes = 0;
+	let sleepingBoxes = 0;
+	for (const status of boxStatuses.values()) {
+		if (status === "running") runningBoxes += 1;
+		if (status === "sleeping") sleepingBoxes += 1;
+	}
+	return { workers, runningBoxes, sleepingBoxes };
 }
 
 export function classifyAgentsViewSession(summary: SessionSummary): AgentsViewSection {
@@ -945,7 +972,18 @@ export function buildAgentsViewRows(
 		}
 		const childHasSpawnCode = children.some((child) => hasSpawnCode(child.summary));
 		const expanded = expandedSubagentParents.has(row.identity);
-		flattened.push(createSubagentSummaryRow(row, children, depth + 1, childHasSpawnCode, expanded));
+		const descendants: MutableAgentsViewRow[] = [];
+		const pending = [...children];
+		const visited = new Set<MutableAgentsViewRow>();
+		for (let index = 0; index < pending.length; index++) {
+			const child = pending[index]!;
+			if (visited.has(child)) continue;
+			visited.add(child);
+			descendants.push(child);
+			pending.push(...(childrenByParent.get(child) ?? []));
+		}
+		const workerCounts = countWorkerSailboxes(descendants.map((child) => child.summary));
+		flattened.push(createSubagentSummaryRow(row, children, depth + 1, childHasSpawnCode, expanded, workerCounts));
 		if (!expanded) {
 			return;
 		}
@@ -983,6 +1021,7 @@ function createSubagentSummaryRow(
 	depth: number,
 	hasSpawnCode: boolean,
 	expanded: boolean,
+	workerCounts: WorkerSailboxCounts,
 ): AgentsViewRow {
 	const totalCount = children.length;
 	const running = parent.runningSubagentCount;
@@ -1015,6 +1054,9 @@ function createSubagentSummaryRow(
 		parentIdentity: parent.identity,
 		hasSpawnCode,
 		expanded,
+		...(workerCounts.workers > 0 || workerCounts.runningBoxes > 0 || workerCounts.sleepingBoxes > 0
+			? { workerCounts }
+			: {}),
 	};
 }
 
@@ -1083,6 +1125,10 @@ function buildSpawnCodeRows(
 }
 
 function compareAgentsViewRows(a: AgentsViewRow, b: AgentsViewRow, anchorSessionId?: string): number {
+	const workerDiff = Number(b.summary.isDispatchWorker === true) - Number(a.summary.isDispatchWorker === true);
+	if (workerDiff !== 0) {
+		return workerDiff;
+	}
 	const sectionDiff = sectionRank(a.section) - sectionRank(b.section);
 	if (sectionDiff !== 0) {
 		return sectionDiff;

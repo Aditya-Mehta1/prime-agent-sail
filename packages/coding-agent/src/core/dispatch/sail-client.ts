@@ -5,6 +5,7 @@ import { AuthStorage } from "../auth-storage.js";
 
 const executeFile = promisify(execFile);
 const GITHUB_AUTH = "prime-dispatch-github";
+export const DISPATCH_APP_NAME = "prime-agent-dispatch";
 
 export class SailClient {
 	get config() {
@@ -18,6 +19,12 @@ export class SailClient {
 
 	get sdk(): Promise<Client> {
 		return this.config.then((config) => Client.fromConfig(config));
+	}
+
+	async listBoxes(): Promise<Pick<Sailbox, "sailboxId" | "status">[]> {
+		const client = await this.sdk;
+		const app = await client.findApp(DISPATCH_APP_NAME, false);
+		return Sailbox.list({ appId: app.id, client });
 	}
 
 	async createBox(appId: string, name: string) {

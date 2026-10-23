@@ -556,6 +556,12 @@ export interface AgentConnectionRlmChildAgentSnapshot {
 	parentId?: string;
 	/** Child daemon active-session id, for direct attachment. */
 	activeSessionId?: string;
+	/** True only for a child admitted through rlm.dispatch(), including while queued. */
+	isDispatchWorker?: boolean;
+	/** Sailbox shared by this child; helpers may share their dispatch parent's box. */
+	sailboxId?: string;
+	/** Latest Sailbox state, enriched by the daemon supervisor. */
+	sailboxStatus?: string;
 	/** Stable daemon-visible child name for addressing and display. */
 	sessionName?: string;
 	/** Exact provider/model selector used by the child. */

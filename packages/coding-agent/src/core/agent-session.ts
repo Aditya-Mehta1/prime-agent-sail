@@ -387,6 +387,10 @@ export interface RlmChildAgentSnapshot {
 	id: string;
 	parentId?: string;
 	activeSessionId?: string;
+	/** True only for a child admitted through rlm.dispatch(), including while queued. */
+	isDispatchWorker?: boolean;
+	/** Sailbox shared by this child; helpers may share their dispatch parent's box. */
+	sailboxId?: string;
 	sessionName?: string;
 	model?: string;
 	label: string;
@@ -1042,6 +1046,8 @@ type AutonomousRuntimeSnapshot = Pick<
 
 interface RlmChildRun {
 	id: string;
+	/** Set at dispatch admission so queued snapshots retain worker identity before binding exists. */
+	isDispatchWorker?: boolean;
 	prompt: string;
 	/** rlmChildLabel(prompt), computed once: the prompt never changes. */
 	label: string;
@@ -1371,6 +1377,8 @@ const RLM_CHILD_STABLE_SNAPSHOT_KEYS = Object.keys({
 	id: true,
 	parentId: true,
 	activeSessionId: true,
+	isDispatchWorker: true,
+	sailboxId: true,
 	sessionName: true,
 	model: true,
 	label: true,
@@ -12266,6 +12274,8 @@ export class AgentSession {
 		return {
 			id: run.id,
 			parentId: this._rlmParentNodeId,
+			...(run.isDispatchWorker ? { isDispatchWorker: true } : {}),
+			...(child?.dispatchBinding?.boxId ? { sailboxId: child.dispatchBinding.boxId } : {}),
 			sessionName: child?.sessionName ?? run.sessionName,
 			model: `${model.provider}/${model.id}`,
 			label: run.label,
@@ -12310,6 +12320,8 @@ export class AgentSession {
 		return {
 			id: childId,
 			parentId: this._rlmParentNodeId,
+			...(child.dispatchBinding?.ownsBox ? { isDispatchWorker: true } : {}),
+			...(child.dispatchBinding?.boxId ? { sailboxId: child.dispatchBinding.boxId } : {}),
 			sessionName: child.sessionName,
 			model: child.model ? `${child.model.provider}/${child.model.id}` : undefined,
 			label: child.sessionName ?? "child agent",
@@ -12805,6 +12817,7 @@ export class AgentSession {
 		const preparationController = new AbortController();
 		const run: RlmChildRun = {
 			id: childNodeId,
+			...(dispatch ? { isDispatchWorker: true } : {}),
 			prompt,
 			label: rlmChildLabel(prompt),
 			sessionName,

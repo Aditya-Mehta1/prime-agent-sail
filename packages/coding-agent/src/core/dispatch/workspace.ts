@@ -9,7 +9,7 @@ import { NotFoundError } from "@sailresearch/sdk";
 import { getBundledSkillsDir, getPackageDir } from "../../config.js";
 import { parseGitUrl } from "../../utils/git.js";
 import { DEFAULT_RLM_EXTRA_UV_ARGS } from "../kernel/bootstrap.js";
-import { SailClient } from "./sail-client.js";
+import { DISPATCH_APP_NAME, SailClient } from "./sail-client.js";
 import type { DispatchBinding } from "./types.js";
 
 const executeFile = promisify(execFile);
@@ -93,7 +93,7 @@ export async function prepareDispatchWorkspace(options: PrepareDispatchOptions):
 		await mkdir(join(staging, "inputs"));
 		const inputs = await captureInputs(options.inputs ?? {}, options.sourceCwd, join(staging, "inputs"));
 		const branch = `dispatch/${randomUUID()}`;
-		const app = await (await client.sdk).findApp("prime-agent-dispatch", true);
+		const app = await (await client.sdk).findApp(DISPATCH_APP_NAME, true);
 		options.signal?.throwIfAborted();
 		// Do not abort the create response: retain its ID and terminate a late allocation.
 		const box = await client.createBox(app.id, `prime-${basename(options.sessionDir)}`);

@@ -370,6 +370,8 @@ interface PassiveRlmSubagentEntry {
 	prompt?: string;
 	spawnCode?: string;
 	model?: { provider: string; modelId: string };
+	isDispatchWorker?: boolean;
+	sailboxId?: string;
 	status: "running" | "completed" | "deleted";
 	createdAt: number;
 }
@@ -1479,6 +1481,20 @@ export class AgentDaemon {
 					// A present metadata file may recover without a stat change.
 					if (inputStats.get(resolve(path)) !== "absent") degraded = true;
 				});
+				const dispatchMetadataPath = join(entry.sessionDir, "dispatch.json");
+				await recordInputStat(dispatchMetadataPath);
+				let dispatchBinding: DispatchBinding | undefined;
+				try {
+					dispatchBinding = loadDispatchBinding(entry.sessionDir);
+				} catch {
+					// A malformed optional dispatch file must not break passive listing.
+					degraded = true;
+				}
+				const entryWithDispatch = {
+					...entry,
+					...(dispatchBinding?.ownsBox ? { isDispatchWorker: true } : {}),
+					...(dispatchBinding ? { sailboxId: dispatchBinding.boxId } : {}),
+				};
 				const sessionKey = resolve(entry.sessionFile);
 				if (entry.status === "deleted" || visited.has(sessionKey)) continue;
 				visited.add(sessionKey);
@@ -1492,8 +1508,8 @@ export class AgentDaemon {
 					if (childStat !== "absent") degraded = true;
 					continue;
 				}
-				const chain = [...parentChain, entry];
-				passive.push({ ...root, entry, info, chain });
+				const chain = [...parentChain, entryWithDispatch];
+				passive.push({ ...root, entry: entryWithDispatch, info, chain });
 				await visit(root, { sessionId: info.id, sessionFile: entry.sessionFile }, chain, visited);
 			}
 		};
@@ -1551,6 +1567,8 @@ export class AgentDaemon {
 			snapshots.push({
 				id: passive.entry.childId,
 				...(parentId ? { parentId } : {}),
+				...(passive.entry.isDispatchWorker ? { isDispatchWorker: true } : {}),
+				...(passive.entry.sailboxId ? { sailboxId: passive.entry.sailboxId } : {}),
 				sessionName: passive.info.name ?? passive.entry.sessionName,
 				model: passive.entry.model ? `${passive.entry.model.provider}/${passive.entry.model.modelId}` : undefined,
 				label: rlmChildLabel(passive.entry.prompt ?? ""),
@@ -1590,6 +1608,8 @@ export class AgentDaemon {
 					passive.rootInfo?.path,
 				rlmDepth: passive.entry.rlmDepth ?? passive.info.rlmDepth,
 				rlmChildId: passive.entry.childId,
+				...(passive.entry.isDispatchWorker ? { isDispatchWorker: true } : {}),
+				...(passive.entry.sailboxId ? { sailboxId: passive.entry.sailboxId } : {}),
 				rlmParentNodeId: passive.entry.rlmParentNodeId ?? passive.entry.childId,
 				spawnCode: passive.entry.spawnCode,
 			};
@@ -7240,6 +7260,8 @@ export class AgentDaemon {
 			activity: "idle",
 			isSessionActive: false,
 			runtimeKind: "subagent",
+			...(child.isDispatchWorker ? { isDispatchWorker: true } : {}),
+			...(child.sailboxId ? { sailboxId: child.sailboxId } : {}),
 			rlmDepth: (parentSession.rlmDepth ?? 0) + 1,
 			sessionId: child.id,
 			sessionName: child.sessionName,

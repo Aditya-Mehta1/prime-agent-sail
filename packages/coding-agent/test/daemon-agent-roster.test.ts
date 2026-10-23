@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../src/core/session-manager.js";
 import type { ActiveSessionState } from "../src/modes/daemon/active-session-state.js";
 import {
+	type AgentRoster,
 	type AgentRosterEntry,
 	classifySessionRosterStatus,
 	type WorkerRosterEntry,
@@ -658,6 +659,7 @@ function makeWorker(workerId: string, overrides: Partial<WorkerFixture> = {}): W
 
 interface SupervisorFixture {
 	workers: Map<string, WorkerFixture>;
+	handleCommand(client: object, command: object): Promise<unknown>;
 	flushRosterUpdates(): void;
 	consumeWorkerRosterDelta(worker: WorkerFixture, payload: Buffer): void;
 	handleList(
@@ -670,12 +672,7 @@ interface SupervisorFixture {
 	workerRosterEntries(worker: WorkerFixture): AgentRosterEntry[];
 	flipWorkerRosterEntriesInactive(worker: WorkerFixture): void;
 	seedRosterLedger(): Promise<void>;
-	roster(): {
-		get(agentId: string): AgentRosterEntry | undefined;
-		has(agentId: string): boolean;
-		values(): IterableIterator<AgentRosterEntry>;
-		delete(agentId: string): void;
-	};
+	roster(): Pick<AgentRoster, "get" | "has" | "values" | "delete">;
 	refreshWorkerSummaries: ReturnType<typeof vi.fn>;
 }
 
@@ -683,6 +680,8 @@ function makeSupervisor(workers: WorkerFixture[], extra: Record<string, unknown>
 	return Object.assign(Object.create(DaemonSupervisor.prototype), {
 		workers: new Map(workers.map((worker) => [worker.descriptor.workerId, worker])),
 		clients: new Set(),
+		sailClient: { listBoxes: vi.fn(async () => []) },
+		sailboxStatuses: new Map<string, string>(),
 		defaultSessionConfig: { agentDir: "/tmp", cwd: "/tmp" },
 		catalog: { list: vi.fn(async () => []) },
 		pendingRosterChanged: new Set(),
@@ -736,6 +735,52 @@ function rosterDelta(entries: WorkerRosterEntry[], removedAgentIds?: string[], s
 }
 
 describe("supervisor roster ledger", () => {
+	it("shares Sailbox polling across roster subscribers", async () => {
+		vi.useFakeTimers();
+		let resolveFirst: (boxes: { sailboxId: string; status: string }[]) => void = () => {};
+		const firstRequest = new Promise<{ sailboxId: string; status: string }[]>((resolveBoxes) => {
+			resolveFirst = resolveBoxes;
+		});
+		const listBoxes = vi
+			.fn()
+			.mockReturnValueOnce(firstRequest)
+			.mockResolvedValue([{ sailboxId: "sb-worker", status: "sleeping" }]);
+		const first = { rosterSubscribed: false };
+		const second = { rosterSubscribed: false };
+		const supervisor = makeSupervisor([], {
+			clients: new Set([first, second]),
+			sailClient: { listBoxes },
+			rosterPushScheduled: true,
+		});
+		const workerSummary = summary({ id: "dispatch", sessionId: "dispatch", activeSessionId: "dispatch-active" });
+		workerSummary.sailboxId = "sb-worker";
+		workerSummary.isDispatchWorker = true;
+		supervisor.writeRosterEntry(workerRosterEntryFromSummary(workerSummary));
+		try {
+			await supervisor.handleCommand(first, { type: "roster_subscribe" });
+			await supervisor.handleCommand(second, { type: "roster_subscribe" });
+			expect(listBoxes).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(listBoxes).toHaveBeenCalledTimes(1);
+
+			resolveFirst([{ sailboxId: "sb-worker", status: "running" }]);
+			await firstRequest;
+			expect(supervisor.roster().get("dispatch")).toMatchObject({ summary: { sailboxStatus: "running" } });
+			await supervisor.handleCommand(first, { type: "roster_unsubscribe" });
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(listBoxes).toHaveBeenCalledTimes(2);
+			expect(supervisor.roster().get("dispatch")).toMatchObject({ summary: { sailboxStatus: "sleeping" } });
+			await supervisor.handleCommand(second, { type: "roster_unsubscribe" });
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(listBoxes).toHaveBeenCalledTimes(2);
+		} finally {
+			resolveFirst([]);
+			if (first.rosterSubscribed) await supervisor.handleCommand(first, { type: "roster_unsubscribe" });
+			if (second.rosterSubscribed) await supervisor.handleCommand(second, { type: "roster_unsubscribe" });
+			vi.useRealTimers();
+		}
+	});
+
 	it("broadcasts a roster row only when its published content changes", () => {
 		const write = vi.fn();
 		const client = { rosterSubscribed: true };
